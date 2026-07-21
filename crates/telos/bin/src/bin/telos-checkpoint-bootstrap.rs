@@ -68,13 +68,13 @@ impl Command {
         {
             eyre::bail!(
                 "--chain must select the exact canonical Telos network pinned by the manifest"
-            )
+            );
         }
         if !self.env.storage.v2 {
-            eyre::bail!("Telos checkpoint bootstrap requires Reth storage v2")
+            eyre::bail!("Telos checkpoint bootstrap requires Reth storage v2");
         }
         if !self.env.datadir.datadir.is_some() {
-            eyre::bail!("Telos checkpoint bootstrap requires an explicit --datadir")
+            eyre::bail!("Telos checkpoint bootstrap requires an explicit --datadir");
         }
 
         let resolved_data_dir = self.env.datadir.clone().resolve_datadir(self.env.chain.chain());
@@ -108,7 +108,7 @@ impl Command {
         {
             eyre::bail!(
                 "verified import outcome does not match the Telos checkpoint manifest; discard the entire data directory"
-            )
+            );
         }
 
         // Drop every writable backend before independently reopening the completed database.
@@ -121,7 +121,7 @@ impl Command {
             eyre::bail!(
                 "reopened checkpoint state root {reopened_state_root} does not match import outcome {}; discard the entire data directory",
                 outcome.computed_state_root
-            )
+            );
         }
         drop(provider_factory);
 
@@ -160,14 +160,16 @@ fn require_new_storage_paths(
                 eyre::bail!(
                     "checkpoint {label} and {other_label} resolve to the same path {}; use three distinct storage paths",
                     path.display()
-                )
+                );
             }
         }
         match std::fs::symlink_metadata(path) {
-            Ok(_) => eyre::bail!(
-                "checkpoint {label} already exists at {}; choose a path that does not exist",
-                path.display()
-            ),
+            Ok(_) => {
+                eyre::bail!(
+                    "checkpoint {label} already exists at {}; choose a path that does not exist",
+                    path.display()
+                );
+            }
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(error) => {
                 return Err(error).map_err(|error| {
@@ -193,7 +195,7 @@ where
         eyre::bail!(
             "checkpoint database is not storage v2: persisted {persisted:?}, cached {:?}",
             provider_factory.cached_storage_settings()
-        )
+        );
     }
     Ok(())
 }
@@ -212,7 +214,7 @@ where
     if last_block != block {
         eyre::bail!(
             "checkpoint data directory is not fresh: highest block is {last_block}, expected only anchor {block}"
-        )
+        );
     }
     let stored_hash = provider.block_hash(block)?.ok_or_else(|| {
         eyre::eyre!("fresh checkpoint database is missing canonical anchor block {block}")
@@ -221,7 +223,7 @@ where
         eyre::bail!(
             "fresh checkpoint database anchor mismatch at {block}: stored {stored_hash}, manifest {}",
             manifest.execution_anchor.parent_block_hash
-        )
+        );
     }
 
     let tx = provider.tx_ref();
@@ -240,7 +242,7 @@ where
     if !occupied.is_empty() {
         eyre::bail!(
             "checkpoint data directory is not fresh (occupied state tables: {occupied:?}); discard it and retry from an empty directory"
-        )
+        );
     }
     Ok(())
 }
@@ -273,7 +275,7 @@ where
             "reopened checkpoint database no longer binds exact anchor {} ({})",
             block,
             manifest.execution_anchor.parent_block_hash
-        )
+        );
     }
     let body_indices = provider
         .block_body_indices(block)?
@@ -282,7 +284,7 @@ where
         eyre::bail!(
             "reopened checkpoint anchor contains {} transactions; the sparse anchor must be empty",
             body_indices.tx_count
-        )
+        );
     }
     for stage in StageId::ALL {
         let checkpoint = provider
@@ -292,7 +294,7 @@ where
             eyre::bail!(
                 "reopened checkpoint {stage} stage is at {}, expected anchor {block}",
                 checkpoint.block_number
-            )
+            );
         }
     }
 
@@ -311,7 +313,7 @@ where
     {
         eyre::bail!(
             "reopened checkpoint has invalid storage-v2 routing: plain accounts/storage {plain_accounts}/{plain_storages}, MDBX account/storage changesets {account_changesets}/{storage_changesets}, hashed accounts/storage {hashed_accounts}/{hashed_storages}"
-        )
+        );
     }
     let mut accounts = tx.cursor_read::<tables::HashedAccounts>()?;
     for entry in accounts.walk(None)? {
@@ -326,7 +328,7 @@ where
             if actual_hash != code_hash {
                 eyre::bail!(
                     "reopened checkpoint bytecode hash mismatch for account {hashed_address}: account {code_hash}, bytes {actual_hash}"
-                )
+                );
             }
         }
     }
@@ -349,7 +351,7 @@ where
         eyre::bail!(
             "reopened checkpoint root mismatch: manifest {}, recomputed hashed state {recomputed_state_root}, persisted trie {persisted_trie_root}",
             manifest.actual_state_root
-        )
+        );
     }
 
     let static_files = provider_factory.static_file_provider();
@@ -363,13 +365,13 @@ where
         {
             eyre::bail!(
                 "reopened checkpoint {segment} static-file range is {range:?}, expected only {block}"
-            )
+            );
         }
     }
 
     let rocksdb = provider_factory.rocksdb_provider();
     if rocksdb.first::<tables::TransactionHashNumbers>()?.is_some() {
-        eyre::bail!("reopened checkpoint has transaction-hash history at its empty anchor")
+        eyre::bail!("reopened checkpoint has transaction-hash history at its empty anchor");
     }
     let mut account_histories = 0usize;
     for entry in rocksdb.iter::<tables::AccountsHistory>()? {
@@ -390,7 +392,7 @@ where
     if account_histories != hashed_accounts || storage_histories != hashed_storages {
         eyre::bail!(
             "reopened checkpoint RocksDB history count mismatch: accounts {account_histories}/{hashed_accounts}, storage {storage_histories}/{hashed_storages}"
-        )
+        );
     }
 
     Ok(recomputed_state_root)
@@ -400,14 +402,16 @@ fn validate_anchor_history(label: &str, block: u64, history: &IntegerList) -> ey
     if history.len() != 1 || !history.contains(block) {
         eyre::bail!(
             "reopened checkpoint {label} history {history:?} is not bound exclusively to anchor {block}"
-        )
+        );
     }
     Ok(())
 }
 
 fn refuse_existing_output(path: &std::path::Path) -> eyre::Result<()> {
     match std::fs::symlink_metadata(path) {
-        Ok(_) => eyre::bail!("refusing to overwrite checkpoint artifact {}", path.display()),
+        Ok(_) => {
+            eyre::bail!("refusing to overwrite checkpoint artifact {}", path.display());
+        }
         Err(error) if error.kind() == ErrorKind::NotFound => {}
         Err(error) => {
             return Err(error).map_err(|error| {
