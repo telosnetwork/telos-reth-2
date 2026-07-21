@@ -3,9 +3,10 @@ import { readdir, readFile, writeFile } from 'fs/promises'
 import { join } from 'path'
 
 const ASSETS_DIR = './docs/dist/public/assets'
-const LINK_MARKER = 'c=Yd(!!i);if(Hd(e.to))'
+const LINK_MARKER =
+  /if\([\w$]+\)return\(0,([\w$]+)\.jsx\)\(`a`,\{\.\.\.([\w$]+),href:([\w$]+)\.to,rel:`noopener noreferrer`,target:`_blank`\}\);let\[[\w$]+,[\w$]+\]=\(\3\.to\|\|``\)\.split\(`#`\)/
 const RUSTDOCS_NAVIGATION_GUARD =
-  'c=Yd(!!i);if(t==="/docs"||t?.startsWith("/docs/"))return(0,v.jsx)(`a`,{...o,href:t});if(Hd(e.to))'
+  /if\(([\w$]+)\.to===`\/docs`\|\|\1\.to\?\.startsWith\(`\/docs\/`\)\)return\(0,[\w$]+\.jsx\)\(`a`,\{\.\.\.[\w$]+,href:\1\.to\}\)/
 
 async function fixRustdocsNavigation() {
   const files = await readdir(ASSETS_DIR)
@@ -17,14 +18,18 @@ async function fixRustdocsNavigation() {
     const path = join(ASSETS_DIR, file)
     const code = await readFile(path, 'utf-8')
 
-    if (code.includes(RUSTDOCS_NAVIGATION_GUARD)) {
+    if (RUSTDOCS_NAVIGATION_GUARD.test(code)) {
       patchedFiles++
       continue
     }
 
-    if (!code.includes(LINK_MARKER)) continue
+    const match = code.match(LINK_MARKER)
+    if (!match) continue
 
-    await writeFile(path, code.replace(LINK_MARKER, RUSTDOCS_NAVIGATION_GUARD))
+    const [linkMarker, jsx, rest, props] = match
+    const guard = `if(${props}.to===\`/docs\`||${props}.to?.startsWith(\`/docs/\`))return(0,${jsx}.jsx)(\`a\`,{...${rest},href:${props}.to});`
+
+    await writeFile(path, code.replace(linkMarker, `${guard}${linkMarker}`))
     patchedFiles++
     console.log(`Patched Rustdocs navigation in ${path}`)
   }
