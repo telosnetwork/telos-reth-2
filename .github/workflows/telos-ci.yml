@@ -296,8 +296,8 @@ jobs:
           sudo install -m 0755 ops/scripts/* /usr/local/libexec/
           sudo install -m 0755 /bin/true /usr/local/bin/telos-reth
           sudo install -m 0755 /bin/true /usr/local/bin/telos-consensus-client
-          systemd-sysusers --dry-run ops/sysusers.d/telos-reth.conf
-          sudo systemd-sysusers ops/sysusers.d/telos-reth.conf
+          systemd-sysusers --dry-run "$GITHUB_WORKSPACE/ops/sysusers.d/telos-reth.conf"
+          sudo systemd-sysusers "$GITHUB_WORKSPACE/ops/sysusers.d/telos-reth.conf"
           systemd-analyze verify ops/systemd/*.service ops/systemd/*.timer
           sudo env TELOS_RESTORE_INTEGRATION_DISPOSABLE_CI=1 \
             bash ops/tests/test_restore_integration.sh
