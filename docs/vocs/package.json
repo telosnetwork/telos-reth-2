@@ -14,18 +14,33 @@
     "fix-rustdocs-navigation": "bun scripts/fix-rustdocs-navigation.ts"
   },
   "dependencies": {
-    "mermaid": "^11",
-    "react": "19.2.4",
-    "react-dom": "19.2.4",
-    "react-server-dom-webpack": "19.2.4",
-    "vocs": "^2.0.11",
-    "waku": "1.0.0-beta.0"
+    "mermaid": "^11.16.0",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "react-server-dom-webpack": "19.2.6",
+    "vocs": "^2.6.1",
+    "waku": "1.0.0-beta.1"
   },
   "devDependencies": {
-    "@types/node": "^24.12.2",
-    "@types/react": "^19.2.14",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.17",
     "glob": "^11.1.0",
+    "rollup": "4.62.2",
     "typescript": "^5.9.3",
-    "vite": "^8.0.16"
+    "vite": "^8.1.5"
+  },
+  "overrides": {
+    "@babel/core": "7.29.7",
+    "body-parser": "2.3.0",
+    "brace-expansion": "5.0.7",
+    "dompurify": "3.4.12",
+    "esbuild": "0.28.1",
+    "hono": "4.12.31",
+    "js-yaml": "4.3.0",
+    "mdast-util-to-hast": "13.2.1",
+    "picomatch": "4.0.5",
+    "react-router": "7.18.1",
+    "rollup": "4.62.2",
+    "yaml": "2.9.0"
   }
 }
