@@ -36,6 +36,11 @@ Use `telos-reth` with `telos-consensus-client`; do not expose the authenticated 
 public internet. Production service definitions, health checks, monitoring, snapshot procedures,
 and rollback guidance live under [`ops/`](./ops) and [`docs/telos/`](./docs/telos).
 
+> **Container note:** the inherited root `Dockerfile`, `docker-bake.hcl`, and
+> `etc/docker-compose.yml` remain upstream-Reth development assets; they do not build or deploy the
+> Telos client. Telos release automation uses only `Dockerfile.telos`, and operators must deploy a
+> signed `telos-reth` release image by digest after the production gates are complete.
+
 [gh-ci]: https://github.com/telosnetwork/telos-reth-2/actions/workflows/telos-ci.yml
 [gh-security]: https://github.com/telosnetwork/telos-reth-2/actions/workflows/telos-security.yml
 [gh-reproducible]: https://github.com/telosnetwork/telos-reth-2/actions/workflows/reproducible-build.yml

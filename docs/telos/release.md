@@ -16,7 +16,14 @@ Before the first release, configure these GitHub controls:
   delete tags.
 - Protect the `production-release` environment with a reviewer pool containing
   at least two independent maintainers, prevent self-review, and prevent
-  administrators from bypassing approval.
+  administrators from bypassing approval. Select deployment branches and tags
+  explicitly: allow the protected `main` branch for manual recovery and the
+  `telos-v*` tag pattern for release and promotion events.
+- Link the `ghcr.io/telosnetwork/telos-reth` package to this repository, grant
+  Actions write access only to this repository, and remove PAT, manual, and
+  other-repository publishers for versioned tags. If the package namespace is
+  already shared and cannot be made exclusive, select a new package name and
+  update both release workflows and this runbook before the first release.
 - Enable private vulnerability reporting, dependency graph, Dependabot alerts,
   secret scanning, push protection, and immutable GitHub Releases.
 - Restrict Actions to pinned, allow-listed actions and require SHA pinning at
@@ -40,6 +47,10 @@ The workflow blocks publication on critical container vulnerabilities. A
 release manager must still review non-critical findings and accepted advisory
 exceptions in `deny.toml`.
 
+Before creating a tag, dispatch `release.yml` with the current package version. The rehearsal
+performs both native builds, byte-identical rebuild checks, runtime-container assembly and smoke
+tests, SBOM generation, and the local Trivy scan without signing or publishing anything.
+
 ## Create a release
 
 Update the explicit version of the `telos-reth` package without changing the
@@ -58,9 +69,22 @@ For a release candidate, first set the package version to a prerelease such as
 
 Approve the `production-release` deployment after confirming the tag points to
 the reviewed commit. The workflow builds native Linux amd64 and arm64 binaries,
-generates SPDX SBOMs, creates deterministic archives and checksums, produces
-GitHub build attestations, signs files with Sigstore keyless signing, publishes
-a multi-platform GHCR image, scans it, and creates a draft GitHub Release.
+independently rebuilds both binaries and requires byte-identical results,
+and generates SPDX SBOMs plus deterministic archives and checksums. Only after
+reproducibility succeeds and the protected environment is approved does it
+produce GitHub build attestations and sign files with Sigstore keyless signing.
+It verifies the signed archive before putting that exact binary into a
+container, executes and scans each architecture image before pushing it, and
+creates the multi-platform image only from the captured architecture digests.
+It then creates a draft GitHub Release.
+
+The workflow fails when it observes an existing GitHub Release or versioned
+container tag, including in checks immediately before registry writes. GHCR
+does not provide an atomic create-only tag operation, so these checks are
+defense in depth rather than server-side tag immutability. Exclusive package
+write access is therefore a release prerequisite. After a partial failed
+release, review the failure and remove only the unpublished partial release
+artifacts before rerunning the same tag.
 
 Publishing the draft promotes the corresponding non-prerelease image to
 `ghcr.io/telosnetwork/telos-reth:latest`. Release candidates never update
@@ -68,7 +92,8 @@ Publishing the draft promotes the corresponding non-prerelease image to
 
 ## Verify artifacts
 
-Download every release asset into one directory, install `cosign`, and run:
+Download every release asset into one directory, install `cosign`, and run.
+The verification script fails closed if `cosign` is unavailable:
 
 ```bash
 TELOS_VERSION=0.1.0 scripts/release/verify-assets.sh ./release-assets

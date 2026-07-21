@@ -5,7 +5,36 @@ set -euo pipefail
 release_dir=${1:-.}
 release_dir=$(cd "$release_dir" && pwd)
 
+command -v cosign >/dev/null 2>&1 \
+    || { echo "cosign is required to authenticate release assets" >&2; exit 1; }
+: "${TELOS_VERSION:?set TELOS_VERSION to verify Sigstore bundles}"
+[[ "$TELOS_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] \
+    || { echo "TELOS_VERSION is not a release-safe semantic version" >&2; exit 1; }
+
 [[ -f "$release_dir/SHA256SUMS" ]] || { echo "SHA256SUMS is missing" >&2; exit 1; }
+
+# Authenticate every primary asset before parsing checksums, opening archives, or executing a
+# binary. A matching but unsigned SHA256SUMS must never authorize attacker-controlled content.
+identity="https://github.com/telosnetwork/telos-reth-2/.github/workflows/release.yml@refs/tags/telos-v${TELOS_VERSION}"
+issuer="https://token.actions.githubusercontent.com"
+signed_files=(
+    "$release_dir/telos-reth-${TELOS_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+    "$release_dir/telos-reth-${TELOS_VERSION}-aarch64-unknown-linux-gnu.tar.gz"
+    "$release_dir/telos-reth-${TELOS_VERSION}-x86_64-unknown-linux-gnu.spdx.json"
+    "$release_dir/telos-reth-${TELOS_VERSION}-aarch64-unknown-linux-gnu.spdx.json"
+    "$release_dir/telos-reth-${TELOS_VERSION}-container.txt"
+    "$release_dir/SHA256SUMS"
+)
+for signed_file in "${signed_files[@]}"; do
+    [[ -f "$signed_file" ]] || { echo "signed release asset is missing: $signed_file" >&2; exit 1; }
+    bundle="${signed_file}.sigstore.json"
+    [[ -f "$bundle" ]] || { echo "Sigstore bundle is missing: $bundle" >&2; exit 1; }
+    cosign verify-blob \
+        --bundle "$bundle" \
+        --certificate-identity "$identity" \
+        --certificate-oidc-issuer "$issuer" \
+        "$signed_file"
+done
 
 (
     cd "$release_dir"
@@ -31,7 +60,7 @@ for archive in "${archives[@]}"; do
     architecture=${BASH_REMATCH[3]}
     root="telos-reth-${version}-${target}"
 
-    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]] \
+    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] \
         || { echo "invalid release version in $archive_name" >&2; exit 1; }
     [[ -z "${seen_targets[$target]+set}" ]] \
         || { echo "duplicate target archive: $target" >&2; exit 1; }
@@ -108,27 +137,3 @@ grep -Eq '^image=ghcr\.io/telosnetwork/telos-reth@sha256:[0-9a-f]{64}$' "${conta
 grep -Fxq "source_commit=${expected_source_commit}" "${container_metadata[0]}"
 grep -Fxq "upstream_release=${expected_upstream_release}" "${container_metadata[0]}"
 grep -Fxq "upstream_commit=${expected_upstream_commit}" "${container_metadata[0]}"
-
-if command -v cosign >/dev/null 2>&1; then
-    : "${TELOS_VERSION:?set TELOS_VERSION to verify Sigstore bundles}"
-    identity="https://github.com/telosnetwork/telos-reth-2/.github/workflows/release.yml@refs/tags/telos-v${TELOS_VERSION}"
-    issuer="https://token.actions.githubusercontent.com"
-
-    signed_files=(
-        "$release_dir"/*.tar.gz
-        "$release_dir"/*.spdx.json
-        "$release_dir"/telos-reth-*-container.txt
-        "$release_dir/SHA256SUMS"
-    )
-    for signed_file in "${signed_files[@]}"; do
-        bundle="${signed_file}.sigstore.json"
-        [[ -f "$bundle" ]] || { echo "Sigstore bundle is missing: $bundle" >&2; exit 1; }
-        cosign verify-blob \
-            --bundle "$bundle" \
-            --certificate-identity "$identity" \
-            --certificate-oidc-issuer "$issuer" \
-            "$signed_file"
-    done
-else
-    echo "cosign not found; checksum and archive structure checks completed" >&2
-fi
