@@ -9513,6 +9513,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "reth-node-telos"
+version = "2.4.1"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-evm",
+ "alloy-genesis",
+ "alloy-primitives",
+ "alloy-rpc-types-engine",
+ "alloy-rpc-types-eth",
+ "clap",
+ "eyre",
+ "jsonrpsee",
+ "once_cell",
+ "reth-chainspec",
+ "reth-cli",
+ "reth-engine-local",
+ "reth-engine-primitives",
+ "reth-ethereum-cli",
+ "reth-ethereum-engine-primitives",
+ "reth-ethereum-primitives",
+ "reth-evm",
+ "reth-evm-ethereum",
+ "reth-execution-errors",
+ "reth-node-api",
+ "reth-node-builder",
+ "reth-node-core",
+ "reth-node-ethereum",
+ "reth-payload-builder",
+ "reth-payload-primitives",
+ "reth-payload-validator",
+ "reth-primitives-traits",
+ "reth-provider",
+ "reth-revm",
+ "reth-rpc-api",
+ "reth-rpc-engine-api",
+ "reth-storage-errors",
+ "reth-telos-rpc",
+ "reth-telos-rpc-engine-api",
+ "revm",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "reth-node-types"
 version = "2.4.1"
 dependencies = [
@@ -10407,6 +10453,48 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-futures",
+]
+
+[[package]]
+name = "reth-telos-rpc"
+version = "2.4.1"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "bs58",
+ "hex",
+ "jsonrpsee",
+ "jsonrpsee-types",
+ "reqwest",
+ "reth-ethereum-primitives",
+ "reth-rpc-eth-types",
+ "ripemd",
+ "secp256k1 0.30.0",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "reth-telos-rpc-engine-api"
+version = "2.4.1"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rpc-types-engine",
+ "reth-ethereum-engine-primitives",
+ "reth-ethereum-primitives",
+ "reth-payload-primitives",
+ "revm",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -12188,6 +12276,23 @@ dependencies = [
  "filetime",
  "libc",
  "xattr",
+]
+
+[[package]]
+name = "telos-reth"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "eyre",
+ "reth",
+ "reth-cli-util",
+ "reth-ethereum-cli",
+ "reth-node-builder",
+ "reth-node-ethereum",
+ "reth-node-telos",
+ "reth-provider",
+ "reth-telos-rpc",
+ "tracing",
 ]
 
 [[package]]

@@ -3,8 +3,8 @@ version = "2.4.1"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
-homepage = "https://paradigmxyz.github.io/reth"
-repository = "https://github.com/paradigmxyz/reth"
+homepage = "https://github.com/telosnetwork/telos-reth-2"
+repository = "https://github.com/telosnetwork/telos-reth-2"
 exclude = [".github/"]
 
 [workspace]
@@ -109,6 +109,10 @@ members = [
     "crates/storage/provider/",
     "crates/storage/storage-api/",
     "crates/tasks/",
+    "crates/telos/bin/",
+    "crates/telos/node/",
+    "crates/telos/rpc-engine-api/",
+    "crates/telos/rpc/",
     "crates/tokio-util/",
     "crates/tracing/",
     "crates/transaction-pool/",
@@ -315,7 +319,7 @@ incremental = false
 
 [workspace.dependencies]
 # reth
-reth = { path = "bin/reth" }
+reth = { path = "bin/reth", default-features = false }
 reth-storage-rpc-provider = { path = "crates/storage/rpc-provider" }
 reth-basic-payload-builder = { path = "crates/payload/basic" }
 reth-chain-state = { path = "crates/chain-state" }
@@ -384,6 +388,7 @@ reth-node-api = { path = "crates/node/api" }
 reth-node-builder = { path = "crates/node/builder" }
 reth-node-core = { path = "crates/node/core" }
 reth-node-ethereum = { path = "crates/ethereum/node" }
+reth-node-telos = { path = "crates/telos/node" }
 reth-node-ethstats = { path = "crates/node/ethstats" }
 reth-node-events = { path = "crates/node/events" }
 reth-node-metrics = { path = "crates/node/metrics" }
@@ -418,6 +423,8 @@ reth-static-file-types = { path = "crates/static-file/types", default-features =
 reth-storage-api = { path = "crates/storage/storage-api", default-features = false }
 reth-storage-errors = { path = "crates/storage/errors", default-features = false }
 reth-tasks = { path = "crates/tasks" }
+reth-telos-rpc = { path = "crates/telos/rpc" }
+reth-telos-rpc-engine-api = { path = "crates/telos/rpc-engine-api" }
 reth-testing-utils = { path = "testing/testing-utils" }
 reth-tokio-util = { path = "crates/tokio-util" }
 reth-tracing = { path = "crates/tracing" }
@@ -485,6 +492,7 @@ auto_impl = "1"
 backon = { version = "1.2", default-features = false, features = ["std-blocking-sleep", "tokio-sleep"] }
 bincode = "1.3"
 bitflags = "2.4"
+bs58 = { version = "0.5", default-features = false, features = ["std"] }
 boyer-moore-magiclen = "0.2.16"
 bytes = { version = "1.11.1", default-features = false }
 blake3 = "1.8"
@@ -500,6 +508,7 @@ eyre = "0.6"
 fdlimit = "0.3.0"
 fixed-map = { version = "0.9", default-features = false }
 humantime = "2.1"
+hex = { version = "0.4", default-features = false, features = ["std"] }
 imbl = "7"
 humantime-serde = "1.1"
 itertools = { version = "0.14", default-features = false }
@@ -515,6 +524,7 @@ quanta = "0.12"
 paste = "1.0"
 rand = "0.9"
 rayon = "1.7"
+ripemd = { version = "0.1", default-features = false, features = ["std"] }
 thread-priority = "3.0.0"
 rustc-hash = { version = "2.0", default-features = false }
 schnellru = "0.2"

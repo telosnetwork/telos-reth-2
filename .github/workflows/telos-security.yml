@@ -1,0 +1,71 @@
+name: telos / security
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 5 * * MON"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.95.0"
+
+jobs:
+  dependency-policy:
+    name: advisories, sources, and licenses
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (2026-07-20)
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: taiki-e/install-action@4684b8405694ae9dd42c9f39ba901a70ae83f4a3 # v2.82.9
+        with:
+          tool: cargo-deny@0.20.2
+      - name: Enforce dependency policy
+        run: |
+          cargo metadata --locked --format-version 1 >/dev/null
+          cargo deny check advisories bans licenses sources
+
+  dependency-review:
+    name: dependency diff review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          license-check: false
+
+  security-success:
+    name: telos / security success
+    if: always()
+    needs: [dependency-policy, dependency-review]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require security policy jobs
+        env:
+          POLICY_RESULT: ${{ needs.dependency-policy.result }}
+          REVIEW_RESULT: ${{ needs.dependency-review.result }}
+        run: |
+          test "$POLICY_RESULT" = success
+          test "$REVIEW_RESULT" = success -o "$REVIEW_RESULT" = skipped

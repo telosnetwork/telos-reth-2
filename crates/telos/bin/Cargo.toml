@@ -1,0 +1,55 @@
+[package]
+name = "telos-reth"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+default-run = "telos-reth"
+
+[lints]
+workspace = true
+
+[dependencies]
+# reth
+reth.workspace = true
+reth-cli-util.workspace = true
+reth-node-builder.workspace = true
+reth-provider.workspace = true
+reth-node-ethereum.workspace = true
+reth-ethereum-cli.workspace = true
+
+# telos
+reth-node-telos.workspace = true
+reth-telos-rpc.workspace = true
+
+# cli
+clap = { workspace = true, features = ["derive", "env"] }
+
+# logging
+tracing.workspace = true
+eyre.workspace = true
+
+[[bin]]
+name = "telos-reth"
+path = "src/main.rs"
+
+[features]
+default = ["jemalloc"]
+jemalloc = [
+    "reth-cli-util/jemalloc",
+    "reth/jemalloc",
+    "reth-ethereum-cli/jemalloc",
+    "reth-provider/jemalloc",
+]
+jemalloc-prof = [
+    "reth-cli-util/jemalloc-prof",
+    "reth/jemalloc-prof",
+    "reth-ethereum-cli/jemalloc-prof",
+]
+asm-keccak = [
+    "reth/asm-keccak",
+    "reth-node-ethereum/asm-keccak",
+    "reth-ethereum-cli/asm-keccak",
+]

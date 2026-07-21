@@ -1,87 +1,102 @@
-name: reproducible-build
+name: telos / reproducible
 
 on:
-  workflow_dispatch: {}
   schedule:
-    - cron: "0 1 */2 * *"
+    - cron: "41 3 * * SUN"
+  workflow_dispatch:
+
+concurrency:
+  group: telos-reproducible-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions: {}
 
 jobs:
   build:
-    if: github.repository == 'paradigmxyz/reth'
-    name: build reproducible binaries
+    name: independent build / ${{ matrix.machine }}
+    if: github.repository == 'telosnetwork/telos-reth-2' || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
     permissions:
       contents: read
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
-            machine: machine-1
-          - runner: ubuntu-22.04
-            machine: machine-2
+          - machine: ubuntu-22
+            runner: ubuntu-22.04
+          - machine: ubuntu-24
+            runner: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-
-      - uses: dtolnay/rust-toolchain@stable
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (2026-07-20)
         with:
-          target: x86_64-unknown-linux-gnu
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-
-      - name: Build reproducible binary with Docker
-        run: |
-          RUST_TOOLCHAIN=$(rustc --version | cut -d' ' -f2)
-          docker build \
-            --build-arg "RUST_TOOLCHAIN=${RUST_TOOLCHAIN}" \
-            -f Dockerfile.reproducible -t reth:release \
-            --target artifacts \
-            --output type=local,dest=./target .
-
-      - name: Calculate SHA256
-        id: sha256
-        run: |
-          sha256sum target/reth > checksum.sha256
-          echo "Binaries SHA256 on ${{ matrix.machine }}: $(cat checksum.sha256)"
-
-      - name: Upload the hash
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          toolchain: "1.95.0"
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
         with:
-          name: checksum-${{ matrix.machine }}
-          path: |
-            checksum.sha256
-          retention-days: 1
+          version: v0.35.0
+          driver-opts: image=moby/buildkit:v0.31.2@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
+      - name: Resolve build metadata
+        id: metadata
+        run: |
+          set -euo pipefail
+          version=$(cargo metadata --locked --no-deps --format-version 1 \
+            | jq -er '[.packages[] | select(.name == "telos-reth") | .version] | if length == 1 then .[0] else error("expected exactly one telos-reth package") end')
+          upstream_release=$(jq -er .release .github/telos/upstream-base.json)
+          upstream_commit=$(jq -er .commit .github/telos/upstream-base.json)
+          git merge-base --is-ancestor "$upstream_commit" HEAD
+          {
+            echo "version=$version"
+            echo "source_commit=$(git rev-parse HEAD)"
+            echo "source_date_epoch=$(git show -s --format=%ct HEAD)"
+            echo "upstream_release=$upstream_release"
+            echo "upstream_commit=$upstream_commit"
+          } >> "$GITHUB_OUTPUT"
+      - name: Build from pinned toolchain image without cache
+        run: |
+          docker buildx build \
+            --file Dockerfile.telos \
+            --target artifact \
+            --platform linux/amd64 \
+            --no-cache \
+            --build-arg "SOURCE_COMMIT=${{ steps.metadata.outputs.source_commit }}" \
+            --build-arg "SOURCE_DATE_EPOCH=${{ steps.metadata.outputs.source_date_epoch }}" \
+            --build-arg "TELOS_VERSION=${{ steps.metadata.outputs.version }}" \
+            --build-arg "UPSTREAM_RELEASE=${{ steps.metadata.outputs.upstream_release }}" \
+            --build-arg "UPSTREAM_COMMIT=${{ steps.metadata.outputs.upstream_commit }}" \
+            --output type=local,dest=output \
+            .
+      - name: Hash reproducible binary
+        run: |
+          test -x output/telos-reth
+          sha256sum output/telos-reth | sed 's#  output/telos-reth#  telos-reth#' > checksum.sha256
+          cat checksum.sha256
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: reproducible-${{ matrix.machine }}
+          path: checksum.sha256
+          if-no-files-found: error
+          retention-days: 2
 
   compare:
-    name: compare reproducible binaries
+    name: compare independent binaries
+    if: always()
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - name: Download artifacts from machine-1
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: checksum-machine-1
-          path: machine-1/
-      - name: Download artifacts from machine-2
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: checksum-machine-2
-          path: machine-2/
-      - name: Compare SHA256 hashes
+          pattern: reproducible-*
+          path: checksums
+      - name: Require byte-identical binaries
         run: |
-          echo "=== SHA256 Comparison ==="
-          echo "Machine 1 hash:"
-          cat machine-1/checksum.sha256
-          echo "Machine 2 hash:"
-          cat machine-2/checksum.sha256
-
-          if cmp -s machine-1/checksum.sha256 machine-2/checksum.sha256; then
-            echo "✅ SUCCESS: Binaries are identical (reproducible build verified)"
-          else
-            echo "❌ FAILURE: Binaries differ (reproducible build failed)"
-            exit 1
-          fi
+          test "${{ needs.build.result }}" = success
+          cmp checksums/reproducible-ubuntu-22/checksum.sha256 checksums/reproducible-ubuntu-24/checksum.sha256
+          cat checksums/reproducible-ubuntu-24/checksum.sha256

@@ -1,24 +1,47 @@
-# reth
+# telos-reth-2
 
-[![bench status](https://github.com/paradigmxyz/reth/actions/workflows/bench.yml/badge.svg)](https://github.com/paradigmxyz/reth/actions/workflows/bench.yml)
-[![CI status](https://github.com/paradigmxyz/reth/workflows/unit/badge.svg)][gh-ci]
-[![cargo-lint status](https://github.com/paradigmxyz/reth/actions/workflows/lint.yml/badge.svg)][gh-lint]
-[![Telegram Chat][tg-badge]][tg-url]
+[![Telos CI](https://github.com/telosnetwork/telos-reth-2/actions/workflows/telos-ci.yml/badge.svg)][gh-ci]
+[![Telos security](https://github.com/telosnetwork/telos-reth-2/actions/workflows/telos-security.yml/badge.svg)][gh-security]
+[![Reproducible build](https://github.com/telosnetwork/telos-reth-2/actions/workflows/reproducible-build.yml/badge.svg)][gh-reproducible]
 
-**Modular, contributor-friendly and blazing-fast implementation of the Ethereum protocol**
+**A Telos execution client built on stable upstream Reth.**
 
 ![](./assets/reth-2.png)
 
-**[Install](https://reth.rs/installation/installation)**
-| [User Docs](https://reth.rs)
-| [Developer Docs](./docs)
-| [Crate Docs](https://reth.rs/docs)
+This repository preserves upstream history and starts from Reth `v2.4.1` commit
+`8eb210175687c9f0c889a3b6795c16781d830e3a`. Telos-specific behavior is isolated in dedicated
+crates and narrow extension points so upstream security and durability fixes can be adopted
+quickly.
 
-[gh-ci]: https://github.com/paradigmxyz/reth/actions/workflows/unit.yml
-[gh-lint]: https://github.com/paradigmxyz/reth/actions/workflows/lint.yml
+> **Release status:** development builds are not production-approved. Promotion requires the
+> repository checks plus companion-client contract tests, restart and reorg tests, testnet soak,
+> shadow-mainnet parity, and a verified rollback snapshot. See the
+> [Telos architecture and launch gates](./docs/telos/architecture.md) and the
+> [compatibility matrix](./docs/telos/compatibility.md). The current candidate deliberately blocks
+> Telos startup until the [Telos EVM semantics are ported to revm 41](./docs/telos/execution-compatibility.md).
+
+## Build the Telos binary
+
+The minimum supported Rust version is 1.95. Nightly Rust is also required for the repository's
+format and lint checks.
+
+```sh
+git clone https://github.com/telosnetwork/telos-reth-2.git
+cd telos-reth-2
+cargo build --release -p telos-reth
+./target/release/telos-reth --help
+```
+
+Use `telos-reth` with `telos-consensus-client`; do not expose the authenticated Engine API to the
+public internet. Production service definitions, health checks, monitoring, snapshot procedures,
+and rollback guidance live under [`ops/`](./ops) and [`docs/telos/`](./docs/telos).
+
+[gh-ci]: https://github.com/telosnetwork/telos-reth-2/actions/workflows/telos-ci.yml
+[gh-security]: https://github.com/telosnetwork/telos-reth-2/actions/workflows/telos-security.yml
+[gh-reproducible]: https://github.com/telosnetwork/telos-reth-2/actions/workflows/reproducible-build.yml
 [tg-badge]: https://img.shields.io/endpoint?color=neon&logo=telegram&label=chat&url=https%3A%2F%2Ftg.sumanjay.workers.dev%2Fparadigm%5Freth
 
-## What is Reth?
+## Upstream Reth
 
 Reth (short for Rust Ethereum, [pronunciation](https://x.com/kelvinfichter/status/1597653609411268608)) is a production-ready Ethereum execution layer client focused on modularity, performance, and user-friendliness. Reth is compatible with all Ethereum Consensus Layer (CL) implementations that support the [Engine API](https://github.com/ethereum/execution-apis/tree/a0d03086564ab1838b462befbc083f873dcf0c0f/src/engine). It is built and driven forward by [Paradigm](https://paradigm.xyz/), and is licensed under the Apache and MIT licenses.
 
@@ -37,7 +60,7 @@ Here's what that looks like in practice on Ethereum Mainnet:
 5. **Support as many EVM chains as possible**: Reth can sync Ethereum and other EVM chains. If you're building one, reach out.
 6. **Configurability**: Profiles for different use cases — from high-performance RPC operators to hobbyists on consumer hardware.
 
-## Status
+## Upstream Reth status
 
 Reth is production ready, and suitable for usage in mission-critical environments such as staking or high-uptime services. We also actively recommend professional node operators to switch to Reth in production for performance and cost reasons in use cases where high performance with great margins is required such as RPC, MEV, Indexing, Simulations, and P2P activities.
 
@@ -72,7 +95,8 @@ For a general overview of the crates, see [Project Layout](./docs/repo/layout.md
 
 ### Contributing
 
-If you want to contribute, or follow along with contributor discussion, you can use our [main telegram](https://t.me/paradigm_reth) to chat with us about the development of Reth!
+Open Telos-specific changes and reports in this repository. Changes that apply to Reth generally
+should be proposed upstream first so this fork can remain small and auditable.
 
 - Our contributor guidelines can be found in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 - See our [contributor docs](./docs) for more information on the project. A good starting point is [Project Layout](./docs/repo/layout.md).
@@ -94,14 +118,18 @@ To fully test Reth, you will need to have [Geth installed](https://geth.ethereum
 First, clone the repository:
 
 ```sh
-git clone https://github.com/paradigmxyz/reth
-cd reth
+git clone https://github.com/telosnetwork/telos-reth-2.git
+cd telos-reth-2
 ```
 
 Next, run the tests:
 
 ```sh
 cargo nextest run --workspace
+
+# Build and test only the Telos binary and crates during local iteration
+cargo build -p telos-reth
+cargo nextest run -p reth-node-telos -p reth-telos-rpc-engine-api -p reth-telos-rpc
 
 # Run the Ethereum Foundation tests
 make ef-tests
@@ -120,9 +148,10 @@ If you have any questions, first see if the answer to your question can be found
 
 If the answer is not there:
 
-- Join the [Telegram][tg-url] to get help, or
-- Open a [discussion](https://github.com/paradigmxyz/reth/discussions/new) with your question, or
-- Open an issue with [the bug](https://github.com/paradigmxyz/reth/issues/new?assignees=&labels=C-bug%2CS-needs-triage&projects=&template=bug.yml)
+- Open a [Telos Reth discussion](https://github.com/telosnetwork/telos-reth-2/discussions/new), or
+- Open a [Telos Reth issue](https://github.com/telosnetwork/telos-reth-2/issues/new/choose).
+
+For upstream Reth behavior, use the [upstream Reth support channels](https://github.com/paradigmxyz/reth#official-channels).
 
 ## Security
 
@@ -144,4 +173,3 @@ None of this would have been possible without them, so big shoutout to the teams
 The `NippyJar` and `Compact` encoding formats and their implementations are designed for storing and retrieving data internally. They are not hardened to safely read potentially malicious data.
 
 [book]: https://reth.rs/
-[tg-url]: https://t.me/paradigm_reth

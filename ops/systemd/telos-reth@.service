@@ -1,0 +1,91 @@
+[Unit]
+Description=Telos Reth execution client (%i)
+Documentation=https://github.com/telosnetwork/telos-reth-2/blob/main/docs/telos/operations.md
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=15min
+StartLimitBurst=3
+ConditionPathIsExecutable=/usr/local/bin/telos-reth
+ConditionPathExists=/etc/telos-reth/%i/node.env
+
+[Service]
+Type=simple
+User=telos-reth
+Group=telos-reth
+UMask=0027
+EnvironmentFile=/etc/telos-reth/%i/node.env
+LoadCredential=jwt.hex:/etc/telos-reth/%i/jwt.hex
+LoadCredential=signer.key:/etc/telos-reth/%i/signer.key
+StateDirectory=telos-reth/%i
+StateDirectoryMode=0750
+RuntimeDirectory=telos-reth/%i
+RuntimeDirectoryMode=0750
+
+ExecStartPre=+/usr/local/libexec/telos-reth-preflight %i %d/jwt.hex %d/signer.key
+ExecStart=/usr/local/bin/telos-reth node \
+    --chain ${CHAIN} \
+    --datadir /var/lib/telos-reth/%i \
+    --authrpc.addr 127.0.0.1 \
+    --authrpc.port ${AUTHRPC_PORT} \
+    --authrpc.jwtsecret %d/jwt.hex \
+    --http \
+    --http.addr 127.0.0.1 \
+    --http.port ${HTTP_PORT} \
+    --http.api ${HTTP_API} \
+    --ipcdisable \
+    --rpc.max-connections ${RPC_MAX_CONNECTIONS} \
+    --rpc.max-request-size ${RPC_MAX_REQUEST_SIZE_MB} \
+    --rpc.max-response-size ${RPC_MAX_RESPONSE_SIZE_MB} \
+    --metrics 127.0.0.1:${METRICS_PORT} \
+    --addr 0.0.0.0 \
+    --port ${P2P_PORT} \
+    --discovery.port ${P2P_PORT} \
+    --telos.endpoint ${TELOS_ENDPOINT} \
+    --telos.signer-account ${TELOS_SIGNER_ACCOUNT} \
+    --telos.signer-permission ${TELOS_SIGNER_PERMISSION} \
+    --telos.signer-key-file %d/signer.key
+
+Restart=on-failure
+RestartSec=10s
+TimeoutStartSec=5min
+TimeoutStopSec=5min
+KillSignal=SIGINT
+LimitNOFILE=1048576
+TasksMax=65536
+MemoryHigh=85%
+MemoryMax=90%
+MemorySwapMax=0
+OOMScoreAdjust=-500
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateMounts=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadOnlyPaths=/etc/telos-reth
+ReadWritePaths=/var/lib/telos-reth/%i /run/telos-reth/%i
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=telos-reth-%i
+
+[Install]
+WantedBy=multi-user.target

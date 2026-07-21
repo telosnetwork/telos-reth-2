@@ -1,0 +1,175 @@
+name: telos / ci
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUST_VERSION: "1.95.0"
+  NIGHTLY_VERSION: nightly-2026-07-17
+
+jobs:
+  format:
+    name: format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (2026-07-20)
+        with:
+          toolchain: ${{ env.NIGHTLY_VERSION }}
+          components: rustfmt
+      - name: Check Rust formatting
+        run: cargo fmt --all --check
+
+  clippy:
+    name: clippy and binary smoke test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1.1.0
+      - run: .github/scripts/install_llvm.sh ubuntu
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (2026-07-20)
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-on-failure: true
+      - name: Discover Telos packages
+        id: packages
+        run: |
+          set -euo pipefail
+          cargo metadata --locked --no-deps --format-version 1 \
+            | jq -er '[.packages[] | select(.manifest_path | contains("/crates/telos/")) | .name] | unique | if length == 0 then error("no Telos packages found") else join(",") end' \
+            | xargs -I{} echo "names={}" >> "$GITHUB_OUTPUT"
+      - name: Lint Telos packages
+        env:
+          PACKAGE_NAMES: ${{ steps.packages.outputs.names }}
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra packages <<< "$PACKAGE_NAMES"
+          cargo_args=()
+          for package in "${packages[@]}"; do
+            cargo_args+=(--package "$package")
+          done
+          cargo clippy --locked --all-targets --all-features "${cargo_args[@]}" -- -D warnings
+      - name: Build and inspect the production binary
+        run: |
+          cargo build --locked --package telos-reth --bin telos-reth
+          ./target/debug/telos-reth --version
+          ./target/debug/telos-reth --help >/dev/null
+
+  test:
+    name: Telos unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1.1.0
+      - run: .github/scripts/install_llvm.sh ubuntu
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (2026-07-20)
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: taiki-e/install-action@4684b8405694ae9dd42c9f39ba901a70ae83f4a3 # v2.82.9
+        with:
+          tool: nextest@0.9.140
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-on-failure: true
+      - name: Test every Telos package
+        run: |
+          set -euo pipefail
+          readarray -t packages < <(
+            cargo metadata --locked --no-deps --format-version 1 \
+              | jq -er '.packages[] | select(.manifest_path | contains("/crates/telos/")) | .name' \
+              | sort -u
+          )
+          ((${#packages[@]} > 0)) || { echo "no Telos packages found" >&2; exit 1; }
+          cargo_args=()
+          for package in "${packages[@]}"; do
+            cargo_args+=(--package "$package")
+          done
+          cargo nextest run --locked --all-features --no-fail-fast "${cargo_args[@]}"
+
+  container-definition:
+    name: container definition
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Build the release runtime stage
+        run: |
+          set -euo pipefail
+          upstream_release=$(jq -er .release .github/telos/upstream-base.json)
+          upstream_commit=$(jq -er .commit .github/telos/upstream-base.json)
+          git merge-base --is-ancestor "$upstream_commit" HEAD
+          mkdir -p dist/container
+          install -m 0755 /bin/true dist/container/telos-reth
+          docker build \
+            --file Dockerfile.telos \
+            --target runtime-prebuilt \
+            --tag telos-reth:ci \
+            --build-arg "SOURCE_COMMIT=${GITHUB_SHA}" \
+            --build-arg "TELOS_VERSION=0.0.0-ci" \
+            --build-arg "UPSTREAM_RELEASE=${upstream_release}" \
+            --build-arg "UPSTREAM_COMMIT=${upstream_commit}" \
+            .
+      - name: Verify runtime invariants
+        run: |
+          set -euo pipefail
+          test "$(docker image inspect telos-reth:ci --format '{{.Config.User}}')" = "nonroot:nonroot"
+          test "$(docker image inspect telos-reth:ci --format '{{json .Config.Entrypoint}}')" = '["/usr/local/bin/telos-reth"]'
+          container_id=$(docker create telos-reth:ci)
+          trap 'docker rm -f "$container_id" >/dev/null' EXIT
+          docker export --output "${RUNNER_TEMP}/telos-reth-rootfs.tar" "$container_id"
+          tar -tf "${RUNNER_TEMP}/telos-reth-rootfs.tar" etc/ssl/certs/ca-certificates.crt >/dev/null
+
+  ci-success:
+    name: telos / ci success
+    if: always()
+    needs: [format, clippy, test, container-definition]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require every CI job
+        env:
+          FORMAT_RESULT: ${{ needs.format.result }}
+          CLIPPY_RESULT: ${{ needs.clippy.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          CONTAINER_RESULT: ${{ needs.container-definition.result }}
+        run: |
+          test "$FORMAT_RESULT" = success
+          test "$CLIPPY_RESULT" = success
+          test "$TEST_RESULT" = success
+          test "$CONTAINER_RESULT" = success

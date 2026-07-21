@@ -134,7 +134,7 @@ use reth_engine_primitives::{
 use reth_errors::{BlockExecutionError, ProviderResult};
 use reth_evm::{
     block::BlockExecutor, execute::ExecutableTxFor, ConfigureEvm, EvmEnvFor, ExecutionCtxFor,
-    OnStateHook, SpecFor,
+    ExecutionReconciliation, OnStateHook, SpecFor,
 };
 use reth_execution_cache::{CacheFillMode, CacheStats, SavedCache};
 use reth_payload_primitives::{
@@ -842,8 +842,17 @@ where
             .record_state_root_gas_bucket(block.header().gas_used(), root_elapsed.as_secs_f64());
         debug!(target: "engine::tree::payload_validator", ?root_elapsed, "Calculated state root");
 
-        // ensure state root matches
-        if state_root != block.header().state_root() {
+        // ensure state root matches, except for networks whose authenticated payload format uses
+        // an explicit placeholder root.
+        let state_root_matches = self.evm_config.state_root_matches(
+            match &input {
+                BlockOrPayload::Payload(payload) => Some(payload),
+                BlockOrPayload::Block(_) => None,
+            },
+            state_root,
+            block.header().state_root(),
+        );
+        if !state_root_matches {
             // call post-block hook
             self.on_invalid_block(
                 &parent_block,
@@ -1049,15 +1058,38 @@ where
             &receipt_tx,
             &executed_tx_index,
             has_bal,
+            match input {
+                BlockOrPayload::Payload(payload) => Some(payload),
+                BlockOrPayload::Block(_) => None,
+            },
         )?;
         drop(receipt_tx);
 
         // Finish execution and get the result
         let post_exec_start = Instant::now();
-        let (_evm, result) = debug_span!(target: "engine::tree", "BlockExecutor::finish")
-            .in_scope(|| executor.finish())
-            .map(|(evm, result)| (evm.into_db(), result))?;
+        let (evm, mut result) = debug_span!(target: "engine::tree", "BlockExecutor::finish")
+            .in_scope(|| executor.finish())?;
+        let reconciliation = match input {
+            BlockOrPayload::Payload(payload) => {
+                self.evm_config.reconcile_payload_execution(payload, evm.into_db(), &mut result)?
+            }
+            BlockOrPayload::Block(_) => {
+                let _ = evm.into_db();
+                ExecutionReconciliation::Unchanged
+            }
+        };
         self.metrics.record_post_execution(post_exec_start.elapsed());
+
+        let result_rx = if reconciliation == ExecutionReconciliation::Reconciled {
+            let (receipt_tx, result_rx) = self.spawn_receipt_root_task(result.receipts.len());
+            for (index, receipt) in result.receipts.iter().cloned().enumerate() {
+                let _ = receipt_tx.send(IndexedReceipt::new(index, receipt));
+            }
+            drop(receipt_tx);
+            result_rx
+        } else {
+            result_rx
+        };
 
         // Merge transitions into bundle state
         debug_span!(target: "engine::tree", "merge_transitions")
@@ -1190,7 +1222,8 @@ where
     /// - Collecting transaction senders for later use
     ///
     /// Returns the executor (for finalization) and the collected senders.
-    fn execute_transactions<'a, E, Tx, InnerTx, Err, DB>(
+    #[expect(clippy::too_many_arguments)]
+    fn execute_transactions<'a, E, Tx, InnerTx, Err, DB, ExecutionData>(
         &self,
         mut executor: E,
         transaction_count: usize,
@@ -1198,6 +1231,7 @@ where
         receipt_tx: &crossbeam_channel::Sender<IndexedReceipt<N::Receipt>>,
         executed_tx_index: &AtomicUsize,
         has_bal: bool,
+        payload: Option<&ExecutionData>,
     ) -> Result<(E, Vec<Address>), BlockExecutionError>
     where
         E: BlockExecutor<Receipt = N::Receipt, Evm: alloy_evm::Evm<DB = &'a mut State<DB>>>,
@@ -1205,6 +1239,7 @@ where
         InnerTx: TxHashRef,
         DB: revm::Database + 'a,
         Err: core::error::Error + Send + Sync + 'static,
+        Evm: ConfigureEngineEvm<ExecutionData>,
     {
         let mut senders = Vec::with_capacity(transaction_count);
 
@@ -1249,6 +1284,14 @@ where
             });
             if tracing::enabled!(target: "engine::tree", Level::TRACE) {
                 trace!(target: "engine::tree", "Executing transaction");
+            }
+
+            if let Some(payload) = payload {
+                self.evm_config.prepare_payload_transaction(
+                    payload,
+                    senders.len() - 1,
+                    executor.evm_mut().db_mut(),
+                )?;
             }
 
             let tx_start = Instant::now();

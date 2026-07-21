@@ -1,0 +1,257 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+die() {
+    echo "telos-reth snapshot: $*" >&2
+    exit 1
+}
+
+[[ $EUID -eq 0 ]] || die "must run as root"
+[[ $# -eq 3 ]] || die "usage: $0 INSTANCE RESTIC_REPOSITORY_CREDENTIAL RESTIC_PASSWORD_CREDENTIAL"
+instance=$1
+repository_file=$2
+password_file=$3
+[[ $instance =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || die "invalid instance name"
+
+node_config=/etc/telos-reth/${instance}/node.env
+backup_config=/etc/telos-reth/${instance}/backup.env
+[[ -f $node_config && -f $backup_config ]] || die "node.env and backup.env are required"
+# shellcheck disable=SC1090
+source "$node_config"
+# shellcheck disable=SC1090
+source "$backup_config"
+
+execution_dir=/var/lib/telos-reth/${instance}
+execution_unit=telos-reth@${instance}.service
+health_unit=telos-reth-readiness@${instance}.service
+state_dir=/var/lib/telos-reth-backup/${instance}
+metrics_dir=/var/lib/telos-reth-health/metrics
+metrics_file=${metrics_dir}/telos_reth_backup_${instance}.prom
+cache_dir=/var/cache/telos-reth-backup/${instance}
+lock_file=/run/lock/telos-reth-snapshot-${instance}.lock
+
+required=(CONSENSUS_DATA_DIR CONSENSUS_UNIT CONSENSUS_BINARY CONSENSUS_VERSION CONSENSUS_SHA256
+    SNAPSHOT_ROOT LOCAL_KEEP RESTIC_TAG HTTP_PORT CHAIN_ID BINARY_SHA256)
+for name in "${required[@]}"; do
+    [[ -n ${!name:-} ]] || die "$name is required"
+    [[ ${!name} != *REPLACE_* ]] || die "$name still contains a placeholder"
+done
+[[ $CONSENSUS_DATA_DIR == /* && $SNAPSHOT_ROOT == /* ]] || die "data and snapshot paths must be absolute"
+[[ $CONSENSUS_DATA_DIR == "/var/lib/telos-consensus/${instance}" ]] ||
+    die "CONSENSUS_DATA_DIR must match the hardened unit path /var/lib/telos-consensus/${instance}"
+case "$CONSENSUS_DATA_DIR" in /|/var|/var/lib|/home|/root) die "unsafe consensus data path" ;; esac
+case "$SNAPSHOT_ROOT" in /|/var|/var/lib|/home|/root) die "unsafe snapshot root" ;; esac
+[[ $LOCAL_KEEP =~ ^[1-9][0-9]*$ ]] || die "LOCAL_KEEP must be positive"
+[[ -r $repository_file && -r $password_file ]] || die "restic credentials are missing"
+repository=$(tr -d '\r\n' < "$repository_file")
+[[ -n $repository && $repository != *[[:space:]]* ]] || die "restic repository credential is malformed"
+case "$repository" in
+    s3:*|sftp:*|rest:*|azure:*|gs:*|rclone:*|b2:*|swift:*) ;;
+    *) die "restic repository must use an off-host backend; local repository paths are rejected" ;;
+esac
+[[ $repository != *127.0.0.1* && $repository != *localhost* && $repository != *'::1'* ]] ||
+    die "restic repository resolves explicitly to loopback"
+if [[ $repository =~ ://[^/@:]+:[^/@]+@ ]]; then
+    die "embedded remote credentials are forbidden; use workload identity or a credential file"
+fi
+[[ -d $execution_dir && ! -L $execution_dir ]] || die "execution data directory is invalid"
+[[ -d $CONSENSUS_DATA_DIR && ! -L $CONSENSUS_DATA_DIR ]] || die "consensus data directory is invalid"
+mkdir -p "$SNAPSHOT_ROOT/$instance" "$state_dir" "$metrics_dir" "$cache_dir"
+
+exec 9>"$lock_file"
+flock -n 9 || die "another snapshot or restore is running"
+
+run_success=0
+services_stopped=0
+snapshot_size=0
+partial_dir=
+probe_target=
+now=$(date +%s)
+
+metric_value() {
+    local path=$1
+    [[ -r $path ]] && cat "$path" || printf '0\n'
+}
+
+emit_metrics() {
+    local tmp
+    tmp=$(mktemp "${metrics_dir}/.telos_reth_backup_${instance}.XXXXXX")
+    {
+        echo '# HELP telos_reth_snapshot_last_run_success Whether the last scheduled snapshot completed locally and remotely.'
+        echo '# TYPE telos_reth_snapshot_last_run_success gauge'
+        printf 'telos_reth_snapshot_last_run_success{network="%s"} %s\n' "$instance" "$run_success"
+        echo '# HELP telos_reth_snapshot_last_run_timestamp_seconds Unix time of the last snapshot attempt.'
+        echo '# TYPE telos_reth_snapshot_last_run_timestamp_seconds gauge'
+        printf 'telos_reth_snapshot_last_run_timestamp_seconds{network="%s"} %s\n' "$instance" "$now"
+        echo '# HELP telos_reth_snapshot_last_local_success_timestamp_seconds Last atomically published and checksum-verified local snapshot.'
+        echo '# TYPE telos_reth_snapshot_last_local_success_timestamp_seconds gauge'
+        printf 'telos_reth_snapshot_last_local_success_timestamp_seconds{network="%s"} %s\n' \
+            "$instance" "$(metric_value "$state_dir/last-local-success")"
+        echo '# HELP telos_reth_snapshot_last_remote_success_timestamp_seconds Last snapshot accepted by the remote restic repository.'
+        echo '# TYPE telos_reth_snapshot_last_remote_success_timestamp_seconds gauge'
+        printf 'telos_reth_snapshot_last_remote_success_timestamp_seconds{network="%s"} %s\n' \
+            "$instance" "$(metric_value "$state_dir/last-remote-success")"
+        echo '# HELP telos_reth_snapshot_last_remote_verified_timestamp_seconds Last remote snapshot metadata verification.'
+        echo '# TYPE telos_reth_snapshot_last_remote_verified_timestamp_seconds gauge'
+        printf 'telos_reth_snapshot_last_remote_verified_timestamp_seconds{network="%s"} %s\n' \
+            "$instance" "$(metric_value "$state_dir/last-remote-verified")"
+        echo '# HELP telos_reth_snapshot_size_bytes Apparent size of the most recent local recovery point.'
+        echo '# TYPE telos_reth_snapshot_size_bytes gauge'
+        printf 'telos_reth_snapshot_size_bytes{network="%s"} %s\n' "$instance" "$snapshot_size"
+    } > "$tmp"
+    chmod 0644 "$tmp"
+    mv -f "$tmp" "$metrics_file"
+}
+
+restart_services() {
+    (( services_stopped == 1 )) || return 0
+    echo "Restarting $execution_unit and $CONSENSUS_UNIT" >&2
+    systemctl start "$execution_unit" || return 1
+    systemctl is-active --quiet "$execution_unit" || return 1
+    systemctl start "$CONSENSUS_UNIT" || return 1
+    systemctl is-active --quiet "$CONSENSUS_UNIT" || return 1
+    services_stopped=0
+}
+
+finish() {
+    local rc=$?
+    trap - EXIT
+    [[ -z $probe_target ]] || rm -f "$probe_target"
+    if ! restart_services; then
+        echo "CRITICAL: services did not restart after snapshot" >&2
+        rc=1
+    fi
+    emit_metrics || true
+    exit "$rc"
+}
+trap finish EXIT
+
+systemctl is-active --quiet "$execution_unit" || die "$execution_unit is not active"
+systemctl is-active --quiet "$CONSENSUS_UNIT" || die "$CONSENSUS_UNIT is not active"
+systemctl reset-failed "$health_unit" >/dev/null 2>&1 || true
+systemctl start --wait "$health_unit" || die "pre-snapshot readiness failed"
+
+# Reflinks make the coordinated stop short. Refuse a slow copy fallback: extended cold-copy
+# downtime is not an acceptable surprise on a production RPC node.
+execution_device=$(stat -c '%d' "$execution_dir")
+consensus_device=$(stat -c '%d' "$CONSENSUS_DATA_DIR")
+snapshot_device=$(stat -c '%d' "$SNAPSHOT_ROOT")
+[[ $execution_device == "$snapshot_device" && $consensus_device == "$snapshot_device" ]] ||
+    die "data directories and SNAPSHOT_ROOT must share a filesystem"
+probe_source=$(find "$execution_dir" -xdev -type f -print -quit)
+probe_target=${SNAPSHOT_ROOT}/.telos-reflink-probe-target
+[[ -n $probe_source ]] || die "execution data directory has no regular file for a reflink probe"
+if ! cp --reflink=always "$probe_source" "$probe_target" 2>/dev/null; then
+    rm -f "$probe_target"
+    probe_target=
+    die "filesystem does not support required copy-on-write reflinks"
+fi
+rm -f "$probe_target"
+probe_target=
+
+finalized_payload=$(jq -cn '{jsonrpc:"2.0",id:1,method:"eth_getBlockByNumber",params:["finalized",false]}')
+finalized_response=$(curl --silent --show-error --fail-with-body --connect-timeout 3 --max-time 8 \
+    --header 'Content-Type: application/json' --data "$finalized_payload" "http://127.0.0.1:${HTTP_PORT}") ||
+    die "could not record finalized block"
+finalized_number=$(jq -er '.result.number' <<< "$finalized_response") || die "finalized block number is unavailable"
+finalized_hash=$(jq -er '.result.hash' <<< "$finalized_response") || die "finalized block hash is unavailable"
+binary=$(readlink -f /usr/local/bin/telos-reth)
+binary_version=$($binary --version | head -n 1)
+actual_digest=$(sha256sum "$binary" | awk '{print $1}')
+[[ ${actual_digest,,} == ${BINARY_SHA256,,} ]] || die "running binary digest differs from approved digest"
+consensus_binary=$(readlink -f "$CONSENSUS_BINARY")
+consensus_version=$($consensus_binary --version | head -n 1)
+consensus_digest=$(sha256sum "$consensus_binary" | awk '{print $1}')
+[[ $consensus_version == "$CONSENSUS_VERSION" ]] || die "consensus version differs from pinned version"
+[[ ${consensus_digest,,} == ${CONSENSUS_SHA256,,} ]] || die "consensus digest differs from approved digest"
+
+snapshot_id=$(date -u +%Y%m%dT%H%M%SZ)-${actual_digest:0:12}
+partial_dir=${SNAPSHOT_ROOT}/${instance}/.${snapshot_id}.partial
+final_dir=${SNAPSHOT_ROOT}/${instance}/${snapshot_id}
+[[ ! -e $partial_dir && ! -e $final_dir ]] || die "snapshot ID collision: $snapshot_id"
+mkdir -m 0700 "$partial_dir"
+
+echo "Stopping consensus, then execution, for coordinated reflink clones" >&2
+systemctl stop "$CONSENSUS_UNIT"
+systemctl stop "$execution_unit"
+services_stopped=1
+systemctl is-active --quiet "$CONSENSUS_UNIT" && die "$CONSENSUS_UNIT did not stop"
+systemctl is-active --quiet "$execution_unit" && die "$execution_unit did not stop"
+
+mkdir -m 0700 "$partial_dir/execution" "$partial_dir/consensus"
+cp -a --one-file-system --reflink=always "$execution_dir/." "$partial_dir/execution/"
+cp -a --one-file-system --reflink=always "$CONSENSUS_DATA_DIR/." "$partial_dir/consensus/"
+if find "$partial_dir/execution" "$partial_dir/consensus" -xdev -type l -print -quit | grep -q .; then
+    die "snapshot contains a symlink; refusing an unsafe recovery point"
+fi
+
+# The clones are immutable point-in-time inputs now; resume block production before hashing them.
+restart_services || die "services failed to restart after reflink clone"
+
+jq -n \
+    --arg schema 'telos-reth-snapshot/v1' \
+    --arg instance "$instance" \
+    --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg hostname "$(hostname --fqdn)" \
+    --arg chain_id "$CHAIN_ID" \
+    --arg binary_version "$binary_version" \
+    --arg binary_sha256 "$actual_digest" \
+    --arg consensus_version "$consensus_version" \
+    --arg consensus_sha256 "$consensus_digest" \
+    --arg finalized_number "$finalized_number" \
+    --arg finalized_hash "$finalized_hash" \
+    '{schema:$schema,instance:$instance,created_at:$created_at,hostname:$hostname,
+      chain_id:$chain_id,binary:{version:$binary_version,sha256:$binary_sha256},
+      consensus_companion:{version:$consensus_version,sha256:$consensus_sha256},
+      finalized:{number:$finalized_number,hash:$finalized_hash}}' > "$partial_dir/manifest.json"
+
+(
+    cd "$partial_dir"
+    find execution consensus -xdev -type f -print0 | LC_ALL=C sort -z | xargs -0r sha256sum
+    sha256sum manifest.json
+) > "$partial_dir/SHA256SUMS"
+(
+    cd "$partial_dir"
+    sha256sum --check --strict SHA256SUMS
+) >/dev/null
+snapshot_size=$(du -sb "$partial_dir" | awk '{print $1}')
+sync -f "$partial_dir/manifest.json"
+sync -f "$partial_dir/SHA256SUMS"
+sync -f "$partial_dir"
+mv "$partial_dir" "$final_dir"
+partial_dir=
+sync -f "${SNAPSHOT_ROOT}/${instance}"
+printf '%s\n' "$now" > "$state_dir/last-local-success"
+
+# A local CoW clone is a rollback aid, not disaster recovery. The run fails until the complete
+# recovery point is stored in the independently managed restic repository and its metadata reads back.
+restic_output=$(mktemp "$state_dir/restic.XXXXXX")
+RESTIC_CACHE_DIR=$cache_dir restic --repository-file "$repository_file" --password-file "$password_file" \
+    snapshots --json >/dev/null
+RESTIC_CACHE_DIR=$cache_dir restic --repository-file "$repository_file" --password-file "$password_file" \
+    backup "$final_dir" --tag telos-reth --tag "$instance" --tag "$RESTIC_TAG" --json > "$restic_output"
+remote_snapshot_id=$(jq -r 'select(.message_type == "summary") | .snapshot_id' "$restic_output" | tail -n 1)
+rm -f "$restic_output"
+[[ $remote_snapshot_id =~ ^[[:xdigit:]]{64}$ ]] || die "restic did not return a snapshot ID"
+RESTIC_CACHE_DIR=$cache_dir restic --repository-file "$repository_file" --password-file "$password_file" \
+    cat snapshot "$remote_snapshot_id" >/dev/null
+printf '%s\n' "$remote_snapshot_id" > "$final_dir/remote.snapshot-id"
+printf '%s\n' "$now" > "$state_dir/last-remote-success"
+printf '%s\n' "$now" > "$state_dir/last-remote-verified"
+
+# Only prune local staging points that carry proof of remote upload. Symlinks are never followed.
+mapfile -t snapshots < <(find "${SNAPSHOT_ROOT}/${instance}" -mindepth 1 -maxdepth 1 -type d \
+    -name '20??????T??????Z-*' -printf '%f\n' | LC_ALL=C sort -r)
+if (( ${#snapshots[@]} > LOCAL_KEEP )); then
+    for candidate in "${snapshots[@]:LOCAL_KEEP}"; do
+        candidate_path=${SNAPSHOT_ROOT}/${instance}/${candidate}
+        [[ -f $candidate_path/remote.snapshot-id && -f $candidate_path/manifest.json ]] || continue
+        find "$candidate_path" -xdev -depth -delete
+    done
+fi
+
+systemctl reset-failed "$health_unit" >/dev/null 2>&1 || true
+systemctl start --wait "$health_unit" || die "post-snapshot readiness failed"
+run_success=1
+echo "Snapshot $snapshot_id uploaded and verified as restic $remote_snapshot_id" >&2

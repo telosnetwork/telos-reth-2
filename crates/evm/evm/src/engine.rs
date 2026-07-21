@@ -1,8 +1,24 @@
 use crate::{execute::ExecutableTxFor, ConfigureEvm, EvmEnvFor, ExecutionCtxFor, TxEnvFor};
 use alloy_consensus::transaction::Either;
-use alloy_evm::{block::ExecutableTxParts, RecoveredTx};
+use alloy_evm::{
+    block::{BlockExecutionResult, ExecutableTxParts},
+    RecoveredTx,
+};
+use alloy_primitives::B256;
 use rayon::prelude::*;
-use reth_primitives_traits::TxTy;
+use reth_execution_errors::BlockExecutionError;
+use reth_primitives_traits::{ReceiptTy, TxTy};
+use revm::{database::State, Database};
+
+/// Whether a chain-specific reconciliation changed the execution result or state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExecutionReconciliation {
+    /// Local execution is already canonical.
+    #[default]
+    Unchanged,
+    /// Authoritative chain data corrected state and/or receipts.
+    Reconciled,
+}
 
 /// [`ConfigureEvm`] extension providing methods for executing payloads.
 pub trait ConfigureEngineEvm<ExecutionData>: ConfigureEvm {
@@ -20,6 +36,45 @@ pub trait ConfigureEngineEvm<ExecutionData>: ConfigureEvm {
         &self,
         payload: &ExecutionData,
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error>;
+
+    /// Applies chain-specific state required immediately before a payload transaction executes.
+    fn prepare_payload_transaction<DB>(
+        &self,
+        _payload: &ExecutionData,
+        _transaction_index: usize,
+        _state: &mut State<DB>,
+    ) -> Result<(), BlockExecutionError>
+    where
+        DB: Database,
+    {
+        Ok(())
+    }
+
+    /// Reconciles local execution with authenticated chain-specific execution data.
+    fn reconcile_payload_execution<DB>(
+        &self,
+        _payload: &ExecutionData,
+        _state: &mut State<DB>,
+        _result: &mut BlockExecutionResult<ReceiptTy<Self::Primitives>>,
+    ) -> Result<ExecutionReconciliation, BlockExecutionError>
+    where
+        DB: Database,
+    {
+        Ok(ExecutionReconciliation::Unchanged)
+    }
+
+    /// Checks a computed state root against the root stored in the payload header.
+    ///
+    /// Networks whose canonical headers carry an explicit placeholder can override this while
+    /// retaining all other post-execution validation.
+    fn state_root_matches(
+        &self,
+        _payload: Option<&ExecutionData>,
+        computed: B256,
+        expected: B256,
+    ) -> bool {
+        computed == expected
+    }
 }
 
 /// Converts a raw transaction into an executable transaction.

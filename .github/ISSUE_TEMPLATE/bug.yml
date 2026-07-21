@@ -1,13 +1,14 @@
 name: Bug Report
 description: Create a bug report
-labels: ["C-bug", "S-needs-triage"]
+labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
         Thanks for taking the time to fill out this bug report! Please provide as much detail as possible.
 
-        If you believe you have found a vulnerability, please provide details [here](mailto:georgios@paradigm.xyz) instead.
+        Do not report vulnerabilities publicly. Use this repository's
+        [private vulnerability reporting](https://github.com/telosnetwork/telos-reth-2/security/advisories/new) instead.
   - type: textarea
     id: what-happened
     attributes:
@@ -75,21 +76,21 @@ body:
     id: client-version
     attributes:
       label: What version/commit are you on?
-      description: This can be obtained with `reth --version`
+      description: This can be obtained with `telos-reth --version`
     validations:
       required: true
   - type: textarea
     id: database-version
     attributes:
       label: What database version are you on?
-      description: This can be obtained with `reth db version`
+      description: This can be obtained with `telos-reth db version`
     validations:
       required: true
   - type: textarea
     id: network
     attributes:
       label: Which chain / network are you on?
-      description: This is the argument you pass to `reth --chain`. If you are using `--dev`, type in 'dev' here. If you are not running with `--chain` or `--dev` then it is mainnet.
+      description: This is the argument you pass to `telos-reth --chain` (normally `telos-mainnet` or `telos-testnet`).
     validations:
       required: true
   - type: dropdown
@@ -118,7 +119,7 @@ body:
     id: terms
     attributes:
       label: Code of Conduct
-      description: By submitting this issue, you agree to follow our [Code of Conduct](https://github.com/paradigmxyz/reth/blob/main/CONTRIBUTING.md#code-of-conduct)
+      description: By submitting this issue, you agree to follow our [Code of Conduct](https://github.com/telosnetwork/telos-reth-2/blob/main/CONTRIBUTING.md#code-of-conduct)
       options:
         - label: I agree to follow the Code of Conduct
           required: true

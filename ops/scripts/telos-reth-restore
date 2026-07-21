@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+die() {
+    echo "telos-reth restore: $*" >&2
+    exit 1
+}
+
+[[ $EUID -eq 0 ]] || die "must run as root"
+[[ $# -eq 3 && $3 == --confirm ]] ||
+    die "usage: $0 INSTANCE SNAPSHOT_DIRECTORY --confirm"
+instance=$1
+requested_snapshot=$2
+[[ $instance =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || die "invalid instance name"
+
+node_config=/etc/telos-reth/${instance}/node.env
+backup_config=/etc/telos-reth/${instance}/backup.env
+[[ -f $node_config && -f $backup_config ]] || die "node.env and backup.env are required"
+# shellcheck disable=SC1090
+source "$node_config"
+# shellcheck disable=SC1090
+source "$backup_config"
+
+for name in CONSENSUS_DATA_DIR CONSENSUS_UNIT CONSENSUS_BINARY CONSENSUS_VERSION \
+    CONSENSUS_SHA256 SNAPSHOT_ROOT RESTORE_HEALTH_TIMEOUT_SECONDS CHAIN_ID BINARY_SHA256; do
+    [[ -n ${!name:-} ]] || die "$name is required"
+    [[ ${!name} != *REPLACE_* ]] || die "$name still contains a placeholder"
+done
+[[ $RESTORE_HEALTH_TIMEOUT_SECONDS =~ ^[1-9][0-9]*$ ]] || die "RESTORE_HEALTH_TIMEOUT_SECONDS must be positive"
+
+execution_dir=/var/lib/telos-reth/${instance}
+[[ $CONSENSUS_DATA_DIR == "/var/lib/telos-consensus/${instance}" ]] ||
+    die "CONSENSUS_DATA_DIR must match /var/lib/telos-consensus/${instance}"
+execution_unit=telos-reth@${instance}.service
+health_unit=telos-reth-readiness@${instance}.service
+state_dir=/var/lib/telos-reth-backup/${instance}
+lock_file=/run/lock/telos-reth-snapshot-${instance}.lock
+snapshot_parent=$(realpath -m "${SNAPSHOT_ROOT}/${instance}")
+snapshot=$(realpath -e "$requested_snapshot")
+[[ -d $snapshot && ! -L $requested_snapshot ]] || die "snapshot must be a real directory"
+[[ $(dirname "$snapshot") == "$snapshot_parent" ]] || die "snapshot is outside $snapshot_parent"
+snapshot_name=$(basename "$snapshot")
+[[ $snapshot_name =~ ^20[0-9]{6}T[0-9]{6}Z-[[:xdigit:]]{12}$ ]] || die "snapshot name is invalid"
+case "$execution_dir" in /|/var|/var/lib|/home|/root) die "unsafe execution path" ;; esac
+case "$CONSENSUS_DATA_DIR" in /|/var|/var/lib|/home|/root) die "unsafe consensus path" ;; esac
+[[ -d $execution_dir && ! -L $execution_dir ]] || die "current execution data directory is invalid"
+[[ -d $CONSENSUS_DATA_DIR && ! -L $CONSENSUS_DATA_DIR ]] || die "current consensus data directory is invalid"
+mkdir -p "$state_dir"
+
+exec 9>"$lock_file"
+flock -n 9 || die "another snapshot or restore is running"
+
+[[ -f $snapshot/manifest.json && -f $snapshot/SHA256SUMS ]] || die "snapshot metadata is incomplete"
+[[ -d $snapshot/execution && -d $snapshot/consensus ]] || die "snapshot data is incomplete"
+if find "$snapshot/execution" "$snapshot/consensus" -xdev -type l -print -quit | grep -q .; then
+    die "snapshot contains a symlink"
+fi
+# sha256sum accepts arbitrary paths. Restrict the manifest before asking it to read anything so a
+# recovered repository cannot make the verifier traverse outside the selected recovery point.
+while IFS= read -r checksum_line; do
+    checksum_digest=${checksum_line:0:64}
+    checksum_separator=${checksum_line:64:2}
+    checksum_path=${checksum_line:66}
+    [[ $checksum_digest =~ ^[[:xdigit:]]{64}$ && $checksum_separator == '  ' ]] ||
+        die "snapshot checksum manifest has invalid syntax"
+    [[ $checksum_path == manifest.json || $checksum_path == execution/* || $checksum_path == consensus/* ]] ||
+        die "snapshot checksum path is outside the recovery point"
+    [[ /$checksum_path/ != */../* && /$checksum_path/ != */./* && $checksum_path != /* ]] ||
+        die "snapshot checksum path contains traversal"
+done < "$snapshot/SHA256SUMS"
+jq -e --arg instance "$instance" --arg chain_id "$CHAIN_ID" \
+    '.schema == "telos-reth-snapshot/v1" and .instance == $instance and .chain_id == $chain_id and
+     (.binary.sha256 | type == "string") and (.consensus_companion.sha256 | type == "string")' \
+    "$snapshot/manifest.json" >/dev/null || die "snapshot manifest is incompatible"
+(
+    cd "$snapshot"
+    sha256sum --check --strict SHA256SUMS
+) >/dev/null || die "snapshot checksum verification failed"
+
+# A database snapshot is only compatible with the exact execution/companion release pair that
+# created it. Switch the atomic release symlinks first when restoring an older release.
+expected_execution_digest=$(jq -r '.binary.sha256' "$snapshot/manifest.json")
+expected_consensus_digest=$(jq -r '.consensus_companion.sha256' "$snapshot/manifest.json")
+expected_consensus_version=$(jq -r '.consensus_companion.version' "$snapshot/manifest.json")
+[[ ${snapshot_name##*-} == ${expected_execution_digest:0:12} ]] ||
+    die "snapshot directory suffix does not match its execution digest"
+execution_binary=$(readlink -f /usr/local/bin/telos-reth)
+consensus_binary=$(readlink -f "$CONSENSUS_BINARY")
+actual_execution_digest=$(sha256sum "$execution_binary" | awk '{print $1}')
+actual_consensus_digest=$(sha256sum "$consensus_binary" | awk '{print $1}')
+actual_consensus_version=$($consensus_binary --version | head -n 1)
+[[ ${actual_execution_digest,,} == ${expected_execution_digest,,} ]] ||
+    die "active execution binary does not match the snapshot"
+[[ ${actual_execution_digest,,} == ${BINARY_SHA256,,} ]] || die "active execution binary is not deployment-pinned"
+[[ ${actual_consensus_digest,,} == ${expected_consensus_digest,,} ]] ||
+    die "active consensus binary does not match the snapshot"
+[[ ${actual_consensus_digest,,} == ${CONSENSUS_SHA256,,} ]] || die "active consensus binary is not deployment-pinned"
+[[ $actual_consensus_version == "$expected_consensus_version" && $actual_consensus_version == "$CONSENSUS_VERSION" ]] ||
+    die "active consensus version does not match the snapshot and deployment pin"
+
+restore_id=$(date -u +%Y%m%dT%H%M%SZ)
+staging=${snapshot_parent}/.restore-${restore_id}.partial
+old_execution=${execution_dir}.pre-restore-${restore_id}
+old_consensus=${CONSENSUS_DATA_DIR}.pre-restore-${restore_id}
+failed_execution=${execution_dir}.failed-restore-${restore_id}
+failed_consensus=${CONSENSUS_DATA_DIR}.failed-restore-${restore_id}
+for path in "$staging" "$old_execution" "$old_consensus" "$failed_execution" "$failed_consensus"; do
+    [[ ! -e $path ]] || die "restore collision at $path"
+done
+
+# Prepare and verify the replacement before any downtime. Reflinks are used when available; this
+# copy may fall back to a full copy for a remote recovery point restored onto another filesystem.
+mkdir -m 0700 "$staging"
+cp -a --one-file-system --reflink=auto "$snapshot/." "$staging/"
+(
+    cd "$staging"
+    sha256sum --check --strict SHA256SUMS
+) >/dev/null || die "staged restore checksum verification failed"
+
+old_execution_moved=0
+old_consensus_moved=0
+new_execution_installed=0
+new_consensus_installed=0
+services_stopped=0
+committed=0
+
+wait_for_readiness() {
+    local deadline=$(( $(date +%s) + RESTORE_HEALTH_TIMEOUT_SECONDS ))
+    while (( $(date +%s) < deadline )); do
+        systemctl reset-failed "$health_unit" >/dev/null 2>&1 || true
+        if systemctl start --wait "$health_unit"; then
+            return 0
+        fi
+        sleep 15
+    done
+    return 1
+}
+
+rollback() {
+    set +e
+    echo "Restore failed; automatically returning both databases to the pre-restore pair" >&2
+    systemctl stop "$CONSENSUS_UNIT"
+    systemctl stop "$execution_unit"
+    if (( new_execution_installed == 1 )) && [[ -e $execution_dir ]]; then
+        mv "$execution_dir" "$failed_execution"
+    fi
+    if (( new_consensus_installed == 1 )) && [[ -e $CONSENSUS_DATA_DIR ]]; then
+        mv "$CONSENSUS_DATA_DIR" "$failed_consensus"
+    fi
+    if (( old_execution_moved == 1 )) && [[ -e $old_execution ]]; then
+        mv "$old_execution" "$execution_dir"
+    fi
+    if (( old_consensus_moved == 1 )) && [[ -e $old_consensus ]]; then
+        mv "$old_consensus" "$CONSENSUS_DATA_DIR"
+    fi
+    systemctl start "$execution_unit"
+    systemctl start "$CONSENSUS_UNIT"
+    set -e
+}
+
+finish() {
+    local rc=$?
+    trap - EXIT
+    if (( rc != 0 && committed == 0 && (services_stopped == 1 || old_execution_moved == 1 || old_consensus_moved == 1) )); then
+        rollback
+    fi
+    exit "$rc"
+}
+trap finish EXIT
+
+systemctl is-active --quiet "$execution_unit" || die "$execution_unit is not active"
+systemctl is-active --quiet "$CONSENSUS_UNIT" || die "$CONSENSUS_UNIT is not active"
+echo "Stopping consensus, then execution, for atomic directory swaps" >&2
+systemctl stop "$CONSENSUS_UNIT"
+systemctl stop "$execution_unit"
+services_stopped=1
+
+mv "$execution_dir" "$old_execution"
+old_execution_moved=1
+mv "$CONSENSUS_DATA_DIR" "$old_consensus"
+old_consensus_moved=1
+mv "$staging/execution" "$execution_dir"
+new_execution_installed=1
+mv "$staging/consensus" "$CONSENSUS_DATA_DIR"
+new_consensus_installed=1
+sync -f "$(dirname "$execution_dir")"
+sync -f "$(dirname "$CONSENSUS_DATA_DIR")"
+
+systemctl start "$execution_unit"
+systemctl start "$CONSENSUS_UNIT"
+services_stopped=0
+if ! wait_for_readiness; then
+    die "restored pair did not become ready within ${RESTORE_HEALTH_TIMEOUT_SECONDS}s"
+fi
+
+committed=1
+printf '%s instance=%s snapshot=%s execution_rollback=%s consensus_rollback=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$instance" "$snapshot" "$old_execution" "$old_consensus" \
+    >> "$state_dir/restores.log"
+echo "Restore succeeded. Preserve $old_execution and $old_consensus through the soak window." >&2

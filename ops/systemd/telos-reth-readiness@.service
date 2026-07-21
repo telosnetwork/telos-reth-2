@@ -1,0 +1,43 @@
+[Unit]
+Description=Fail-closed Telos Reth readiness check (%i)
+Documentation=https://github.com/telosnetwork/telos-reth-2/blob/main/docs/telos/operations.md
+After=network-online.target telos-reth@%i.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=telos-monitor
+Group=telos-monitor
+UMask=0077
+EnvironmentFile=/etc/telos-reth/%i/node.env
+LoadCredential=jwt.hex:/etc/telos-reth/%i/jwt.hex
+ExecStart=/usr/local/libexec/telos-reth-readiness %i %d/jwt.hex
+TimeoutStartSec=25s
+MemoryMax=192M
+TasksMax=64
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadOnlyPaths=/etc/telos-reth
+ReadWritePaths=/var/lib/telos-reth-health
+
+[Install]
+WantedBy=multi-user.target

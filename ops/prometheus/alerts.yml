@@ -1,0 +1,179 @@
+groups:
+  - name: telos-reth-readiness
+    interval: 15s
+    rules:
+      - alert: TelosRethNotReady
+        expr: telos_reth_readiness == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Telos Reth {{ $labels.network }} is not ready"
+          description: "At least one authenticated Engine, native-chain, progress, or canonical-parity gate is failing. Remove this node from RPC rotation."
+
+      - alert: TelosRethReadinessCheckMissing
+        expr: time() - telos_reth_readiness_last_check_timestamp_seconds > 90
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Telos Reth {{ $labels.network }} readiness checks stopped"
+          description: "The fail-closed checker has not completed for more than 90 seconds."
+
+      - alert: TelosRethReadinessMetricsMissing
+        expr: |
+          label_replace(
+            node_systemd_unit_state{name=~"telos-reth-readiness@.+\\.timer",state="active"} == 1,
+            "network", "$1", "name", "telos-reth-readiness@(.+)\\.timer"
+          ) unless on(network) telos_reth_readiness_last_check_timestamp_seconds
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Telos Reth {{ $labels.network }} readiness metrics never appeared"
+          description: "The readiness timer is active but has not published a textfile metric."
+
+      - alert: TelosRethEngineAuthenticationFailed
+        expr: telos_reth_engine_authenticated == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Telos Reth {{ $labels.network }} Engine authentication failed"
+          description: "The local Engine API rejected a fresh JWT or did not return a valid capabilities response."
+
+      - alert: TelosRethCanonicalMismatch
+        expr: telos_reth_finalized_parity_match == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Telos Reth {{ $labels.network }} finalized hash mismatch"
+          description: "One or more finalized hashes differ from the independent canonical EVM endpoint. Quarantine the node; do not auto-restart it."
+
+      - alert: TelosRethCompanionVersionMismatch
+        expr: telos_reth_companion_compatible == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Telos Reth {{ $labels.network }} companion version mismatch"
+          description: "The running telos-consensus-client is not the exact version pinned for this execution release."
+
+      - alert: TelosRethFinalizedLag
+        expr: abs(telos_reth_finalized_lag_blocks) > 4
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Telos Reth {{ $labels.network }} finalized head has diverged"
+          description: "Local and canonical finalized heights differ by {{ $value }} blocks."
+
+      - alert: TelosRethFinalityStalled
+        expr: telos_reth_finalized_stalled_seconds > 180
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Telos Reth {{ $labels.network }} finality stopped advancing"
+          description: "The local finalized EVM height has not changed for {{ $value }} seconds."
+
+      - alert: TelosNodeosStale
+        expr: telos_reth_nodeos_head_age_seconds > 30 or telos_reth_nodeos_healthy == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Telos native chain source is stale for {{ $labels.network }}"
+          description: "nodeos chain identity, LIB, or head freshness did not pass validation."
+
+  - name: telos-reth-backup
+    interval: 1m
+    rules:
+      - alert: TelosRethSnapshotFailed
+        expr: telos_reth_snapshot_last_run_success == 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Telos Reth {{ $labels.network }} snapshot failed"
+          description: "The coordinated database snapshot or mandatory remote upload did not complete."
+
+      - alert: TelosRethSnapshotMetricsMissing
+        expr: |
+          label_replace(
+            node_systemd_unit_state{name=~"telos-reth-snapshot@.+\\.timer",state="active"} == 1,
+            "network", "$1", "name", "telos-reth-snapshot@(.+)\\.timer"
+          ) unless on(network) telos_reth_snapshot_last_run_timestamp_seconds
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Telos Reth {{ $labels.network }} snapshot metrics never appeared"
+          description: "The snapshot timer is active but has not published a backup result."
+
+      - alert: TelosRethRemoteBackupOverdue
+        expr: time() - telos_reth_snapshot_last_remote_success_timestamp_seconds > 28800
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Telos Reth {{ $labels.network }} remote backup is overdue"
+          description: "No complete execution/consensus recovery point reached off-host restic storage in eight hours."
+
+      - alert: TelosRethRemoteVerificationOverdue
+        expr: time() - telos_reth_snapshot_last_remote_verified_timestamp_seconds > 28800
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Telos Reth {{ $labels.network }} remote backup verification is overdue"
+          description: "Remote snapshot metadata has not been read back in eight hours."
+
+  - name: telos-reth-host
+    interval: 30s
+    rules:
+      - alert: TelosRethSystemdUnitDown
+        expr: node_systemd_unit_state{name=~"telos-(reth|consensus-client)@.+\\.service",state="active"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Systemd unit {{ $labels.name }} is not active"
+          description: "The execution or companion service is outside its required active state."
+
+      - alert: TelosRethMetricsUnavailable
+        expr: up{job="telos-reth"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Telos Reth metrics target {{ $labels.instance }} is down"
+          description: "Prometheus cannot scrape the execution client."
+
+      - alert: TelosRethFilesystemReadOnly
+        expr: node_filesystem_readonly{fstype!~"tmpfs|overlay|squashfs"} == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Filesystem {{ $labels.mountpoint }} became read-only"
+          description: "Database durability is at risk; remove affected RPC nodes from service."
+
+      - alert: TelosRethDiskLow
+        expr: node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} < 0.10
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Filesystem {{ $labels.mountpoint }} has less than 10% free"
+          description: "Execution, consensus, or snapshot storage may stop accepting durable writes."
+
+      - alert: TelosRethDiskWillFill
+        expr: predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}[6h], 24 * 3600) < 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Filesystem {{ $labels.mountpoint }} may fill within 24 hours"
+          description: "Capacity trend predicts exhaustion; add capacity or safely prune remotely verified staging snapshots."

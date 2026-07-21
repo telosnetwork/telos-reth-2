@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 022
+
+die() {
+    echo "telos-reth release: $*" >&2
+    exit 1
+}
+
+[[ $EUID -eq 0 ]] || die "must run as root"
+[[ $# -ge 1 ]] || die "usage: $0 install|activate ..."
+action=$1
+shift
+
+component_paths() {
+    case "$1" in
+        execution)
+            release_root=/usr/local/lib/telos-reth/releases
+            active_link=/usr/local/bin/telos-reth
+            ;;
+        consensus)
+            release_root=/usr/local/lib/telos-consensus-client/releases
+            active_link=/usr/local/bin/telos-consensus-client
+            ;;
+        *) die "component must be execution or consensus" ;;
+    esac
+}
+
+validate_version_and_digest() {
+    [[ $version =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$ ]] || die "invalid version label"
+    [[ $digest =~ ^[[:xdigit:]]{64}$ ]] || die "digest must be SHA-256 hexadecimal"
+}
+
+case "$action" in
+    install)
+        [[ $# -eq 4 ]] || die "usage: $0 install execution|consensus VERSION ARTIFACT SHA256"
+        component=$1
+        version=$2
+        artifact=$(realpath -e "$3")
+        digest=$4
+        component_paths "$component"
+        validate_version_and_digest
+        [[ -f $artifact && ! -L $artifact ]] || die "artifact must be a regular file"
+        actual=$(sha256sum "$artifact" | awk '{print $1}')
+        [[ ${actual,,} == ${digest,,} ]] || die "artifact checksum mismatch"
+        target_dir=${release_root}/${version}
+        target=${target_dir}/$(basename "$active_link")
+        mkdir -p "$target_dir"
+        if [[ -e $target ]]; then
+            installed=$(sha256sum "$target" | awk '{print $1}')
+            [[ ${installed,,} == ${digest,,} ]] || die "$target already exists with different bytes"
+        else
+            partial=${target}.partial.$$
+            install -o root -g root -m 0755 "$artifact" "$partial"
+            sync -f "$partial"
+            mv "$partial" "$target"
+            sync -f "$target_dir"
+        fi
+        printf '%s  %s\n' "${digest,,}" "$(basename "$target")" > "$target_dir/SHA256SUMS"
+        chmod 0644 "$target_dir/SHA256SUMS"
+        echo "Installed $component $version at $target; it is not active yet." >&2
+        ;;
+    activate)
+        [[ $# -eq 3 ]] || die "usage: $0 activate execution|consensus VERSION SHA256"
+        component=$1
+        version=$2
+        digest=$3
+        component_paths "$component"
+        validate_version_and_digest
+        target=${release_root}/${version}/$(basename "$active_link")
+        [[ -x $target && -f $target && ! -L $target ]] || die "release is not installed: $target"
+        actual=$(sha256sum "$target" | awk '{print $1}')
+        [[ ${actual,,} == ${digest,,} ]] || die "installed release checksum mismatch"
+        previous=$(readlink -f "$active_link" 2>/dev/null || true)
+        mkdir -p "$(dirname "$active_link")"
+        pending=${active_link}.pending.$$
+        ln -s "$target" "$pending"
+        mv -Tf "$pending" "$active_link"
+        sync -f "$(dirname "$active_link")"
+        echo "Activated $target (previous: ${previous:-none}). No service was restarted." >&2
+        ;;
+    *) die "action must be install or activate" ;;
+esac

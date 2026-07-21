@@ -39,7 +39,9 @@ jobs:
 
       - run: .github/scripts/install_llvm.sh ubuntu
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (2026-07-20)
+        with:
+          toolchain: "1.95.0"
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -51,23 +53,23 @@ jobs:
           ALLOY_EVM_BRANCH: ${{ inputs.alloy_evm_branch }}
           OP_ALLOY_BRANCH: ${{ inputs.op_alloy_branch }}
         run: |
-          ARGS=""
+          args=()
           if [ -n "$ALLOY_BRANCH" ]; then
-            ARGS="$ARGS --alloy $ALLOY_BRANCH"
+            args+=(--alloy "$ALLOY_BRANCH")
           fi
           if [ -n "$ALLOY_EVM_BRANCH" ]; then
-            ARGS="$ARGS --evm $ALLOY_EVM_BRANCH"
+            args+=(--evm "$ALLOY_EVM_BRANCH")
           fi
           if [ -n "$OP_ALLOY_BRANCH" ]; then
-            ARGS="$ARGS --op $OP_ALLOY_BRANCH"
+            args+=(--op "$OP_ALLOY_BRANCH")
           fi
           
-          if [ -z "$ARGS" ]; then
+          if [ "${#args[@]}" -eq 0 ]; then
             echo "No branches specified, nothing to patch"
             exit 1
           fi
           
-          ./scripts/patch-alloy.sh $ARGS
+          ./scripts/patch-alloy.sh "${args[@]}"
           
           echo "=== Final patch section ==="
           tail -50 Cargo.toml

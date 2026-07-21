@@ -1,0 +1,11 @@
+[Unit]
+Description=Create Telos Reth recovery points every six hours (%i)
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:15:00 UTC
+Persistent=true
+RandomizedDelaySec=15min
+Unit=telos-reth-snapshot@%i.service
+
+[Install]
+WantedBy=timers.target

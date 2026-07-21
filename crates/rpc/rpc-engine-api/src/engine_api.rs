@@ -1162,7 +1162,8 @@ impl<Provider, EngineT, Pool, Validator, ChainSpec> EngineApiServer<EngineT>
     for EngineApi<Provider, EngineT, Pool, Validator, ChainSpec>
 where
     Provider: HeaderProvider + BlockReader + StateProviderFactory + BalProvider + 'static,
-    EngineT: EngineTypes<ExecutionData = ExecutionData>,
+    EngineT: EngineTypes,
+    EngineT::ExecutionData: From<ExecutionData>,
     Pool: TransactionPool + 'static,
     Validator: EngineApiValidator<EngineT>,
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
@@ -1174,7 +1175,7 @@ where
         trace!(target: "rpc::engine", "Serving engine_newPayloadV1");
         let payload =
             ExecutionData { payload: payload.into(), sidecar: ExecutionPayloadSidecar::none() };
-        Ok(self.new_payload_v1_metered(payload).await?)
+        Ok(self.new_payload_v1_metered(payload.into()).await?)
     }
 
     /// Handler for `engine_newPayloadV2`
@@ -1186,7 +1187,7 @@ where
             sidecar: ExecutionPayloadSidecar::none(),
         };
 
-        Ok(self.new_payload_v2_metered(payload).await?)
+        Ok(self.new_payload_v2_metered(payload.into()).await?)
     }
 
     /// Handler for `engine_newPayloadV3`
@@ -1206,7 +1207,7 @@ where
             }),
         };
 
-        Ok(self.new_payload_v3_metered(payload).await?)
+        Ok(self.new_payload_v3_metered(payload.into()).await?)
     }
 
     /// Handler for `engine_newPayloadV4`
@@ -1233,7 +1234,7 @@ where
             ),
         };
 
-        Ok(self.new_payload_v4_metered(payload).await?)
+        Ok(self.new_payload_v4_metered(payload.into()).await?)
     }
 
     /// Handler for `engine_newPayloadV5`
@@ -1262,7 +1263,7 @@ where
             ),
         };
 
-        Ok(self.new_payload_v5_metered(payload).await?)
+        Ok(self.new_payload_v5_metered(payload.into()).await?)
     }
 
     /// Handler for `engine_forkchoiceUpdatedV1`
