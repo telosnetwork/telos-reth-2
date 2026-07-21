@@ -147,10 +147,10 @@ async fn blob_conversion_at_osaka() -> eyre::Result<()> {
     let runtime = Runtime::test();
 
     let current_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-    // Osaka activates in 3 slots. The intermediate Prague block below enters the two-slot
-    // conversion window explicitly, so this test does not depend on payload construction
-    // completing before the converter's four-second delay elapses.
-    let osaka_timestamp = current_timestamp + 36;
+    // Osaka activates in 2 slots. The intermediate Prague block below enters the conversion
+    // window at the current wall-clock timestamp so the converter's four-second delay also
+    // satisfies transaction-pool validation for EIP-7594 sidecars.
+    let osaka_timestamp = current_timestamp + 24;
 
     let genesis: Genesis = serde_json::from_str(include_str!("../assets/genesis.json")).unwrap();
     let chain_spec = Arc::new(
@@ -180,10 +180,10 @@ async fn blob_conversion_at_osaka() -> eyre::Result<()> {
     let first = wallets.pop().unwrap();
     let second = wallets.pop().unwrap();
 
-    // build a dummy payload at `current_timestamp`
+    // Build a dummy payload one second before `current_timestamp`, outside the conversion window.
     let raw_tx = TransactionTestContext::transfer_tx_bytes(1, wallets.pop().unwrap()).await;
     node.rpc.inject_tx(raw_tx).await?;
-    node.payload.timestamp = current_timestamp - 1;
+    node.payload.timestamp = current_timestamp - 2;
     node.advance_block().await?;
 
     // build blob txs
@@ -217,7 +217,7 @@ async fn blob_conversion_at_osaka() -> eyre::Result<()> {
 
     // Build a Prague payload exactly two slots before Osaka. Canonicalizing this payload below
     // starts the background sidecar conversion task deterministically.
-    node.payload.timestamp = osaka_timestamp - 25;
+    node.payload.timestamp = current_timestamp - 1;
     let prague_payload = node.new_payload().await?;
     assert!(matches!(prague_payload.sidecars(), BlobSidecars::Eip4844(_)));
 
