@@ -56,7 +56,7 @@ pub struct TelosClientArgs {
     /// Owner-only regular file containing the signer WIF.
     pub signer_key_file: Option<PathBuf>,
     /// Seconds to cache the gas-price reading from the `eosio.evm` config table.
-    /// Defaults to [`DEFAULT_GAS_CACHE_SECONDS`] when unset.
+    /// Defaults to 8 seconds when unset.
     pub gas_cache_seconds: Option<u32>,
 }
 
@@ -389,10 +389,10 @@ impl TelosClient {
     /// Build a jsonrpsee RPC module that overrides:
     ///
     /// - `eth_sendRawTransaction` — forwards the raw transaction to Telos native via
-    ///   [`send_to_telos`]. The handler decodes the raw bytes, computes the EVM transaction hash,
-    ///   and returns it synchronously after the native submission succeeds. It does NOT insert the
-    ///   transaction into reth's local pool — blocks produced by nodeos flow back through the
-    ///   consensus client and will land the tx naturally.
+    ///   [`Self::send_to_telos`]. The handler decodes the raw bytes, computes the EVM transaction
+    ///   hash, and returns it synchronously after the native submission succeeds. It does NOT
+    ///   insert the transaction into reth's local pool — blocks produced by nodeos flow back
+    ///   through the consensus client and will land the tx naturally.
     /// - `eth_gasPrice` — returns the canonical gas price from the `eosio.evm` config table
     ///   on-chain (cached for `gas_cache_seconds`). Without this override, the default reth oracle
     ///   samples recent block transactions and returns 0 on Telos because empty 0.5s blocks
