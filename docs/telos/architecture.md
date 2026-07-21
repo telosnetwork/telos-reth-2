@@ -15,10 +15,12 @@ client submits two positional parameters in one JWT-authenticated request:
 engine_newPayloadV1(executionPayload, telosExtraFields)
 ```
 
-The two parameters are one atomic validation unit. Extra fields must never be accepted from a
-filesystem, an unauthenticated endpoint, or a request for another payload. The execution payload
-supplies the block number and block hash that bind the native state changes and receipts to the
-request.
+The two parameters arrive as one authenticated request, but co-location alone does not
+cryptographically bind the compatibility object to that payload. Extra fields must never be
+accepted from a filesystem or an unauthenticated endpoint. Before production, a versioned
+extension must identify the exact block and commit to its complete native state and receipt data so
+a delayed or replayed object for another payload is rejected. The current schema lacks that binding,
+which is one reason Telos startup remains disabled.
 
 The currently deployed companion-client object is the Telos extra-fields v1 schema. All collection
 fields required to execute a block must be present, even when empty:
@@ -34,9 +36,11 @@ silently accepted as v1.
 
 ## Validation invariants
 
-The Telos path is fail closed. A payload is invalid when its extra fields are absent, malformed,
-oversized, duplicated inconsistently, or incomplete. Provider and database failures are internal
-errors and must never be converted into empty accounts or zero storage.
+The production Telos path must fail closed. A payload is invalid when its extra fields are absent,
+malformed, oversized, replayed, bound to another block, duplicated inconsistently, or incomplete.
+Provider and database failures are internal errors and must never be converted into empty accounts
+or zero storage. The candidate enforces structural validation and provider-error handling; startup
+remains gated until block binding and two-way completeness are implemented.
 
 Reth still executes every payload transaction with revm. Native account and storage deltas are then
 used as an authoritative reconciliation record, and native receipts are persisted. Reconciliation
@@ -45,6 +49,7 @@ must:
 - compare bytecode bytes, not only bytecode length;
 - hash EVM bytecode with Keccak-256;
 - apply account and storage removals;
+- prove that every locally executed account and storage mutation has an authoritative native row;
 - retain original values so an in-memory or persisted reorg can unwind cleanly;
 - reject unknown receipt types and require receipt count to equal transaction count;
 - retain transaction-root, receipt-root, logs-bloom, gas-used, and structural Engine API checks.

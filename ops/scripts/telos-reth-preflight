@@ -38,6 +38,19 @@ done
 
 [[ $CHAIN_ID =~ ^[0-9]+$ ]] || die "CHAIN_ID must be decimal"
 [[ $NODEOS_CHAIN_ID =~ ^[[:xdigit:]]{64}$ ]] || die "NODEOS_CHAIN_ID must be 64 hexadecimal characters"
+case "$CHAIN_ID" in
+    40)
+        [[ $CHAIN == telos-mainnet ]] || die "EVM chain ID 40 requires CHAIN=telos-mainnet"
+        expected_nodeos_chain_id=4667b205c6838ef70ff7988f6e8257e8be0e1284a2f59699054a018f743b1d11
+        ;;
+    41)
+        [[ $CHAIN == telos-testnet ]] || die "EVM chain ID 41 requires CHAIN=telos-testnet"
+        expected_nodeos_chain_id=1eaa0824707c8c16bd25145493bf062aecddfeb56c736f6ba6397f3195f33c9f
+        ;;
+    *) die "CHAIN_ID must be 40 (mainnet) or 41 (testnet)" ;;
+esac
+[[ ${NODEOS_CHAIN_ID,,} == "$expected_nodeos_chain_id" ]] ||
+    die "NODEOS_CHAIN_ID does not match the canonical native chain for EVM chain ID $CHAIN_ID"
 [[ $BINARY_SHA256 =~ ^[[:xdigit:]]{64}$ ]] || die "BINARY_SHA256 must be 64 hexadecimal characters"
 [[ $CONSENSUS_SHA256 =~ ^[[:xdigit:]]{64}$ ]] || die "CONSENSUS_SHA256 must be 64 hexadecimal characters"
 [[ $REFERENCE_RPC_URL == https://* ]] || die "REFERENCE_RPC_URL must use HTTPS"
@@ -45,6 +58,17 @@ done
     die "TELOS_ENDPOINT must be loopback HTTP or HTTPS"
 [[ $NODEOS_URL == http://127.0.0.1:* || $NODEOS_URL == http://localhost:* || $NODEOS_URL == https://* ]] ||
     die "NODEOS_URL must be loopback HTTP or HTTPS"
+[[ ${TELOS_ENDPOINT%/} == "${NODEOS_URL%/}" ]] ||
+    die "TELOS_ENDPOINT and NODEOS_URL must identify the same native endpoint"
+
+actual_nodeos_chain_id=$(
+    curl --silent --show-error --fail-with-body --connect-timeout 3 --max-time 8 \
+        --header 'Content-Type: application/json' --data '{}' \
+        "${TELOS_ENDPOINT%/}/v1/chain/get_info" \
+        | jq -er '.chain_id | select(type == "string" and test("^[0-9A-Fa-f]{64}$"))'
+) || die "could not validate the native chain ID at TELOS_ENDPOINT"
+[[ ${actual_nodeos_chain_id,,} == "$expected_nodeos_chain_id" ]] ||
+    die "TELOS_ENDPOINT is connected to the wrong native chain"
 
 for name in HTTP_PORT AUTHRPC_PORT METRICS_PORT P2P_PORT; do
     value=${!name}

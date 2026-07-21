@@ -54,9 +54,23 @@ pub enum AntelopeError {
     /// The gas-price cache lock was poisoned by a previous panic.
     #[error("gas-price cache is unavailable")]
     CacheUnavailable,
+    /// The `chain_id` from `get_info` was not a 32-byte hex blob.
+    #[error("bad chain_id hex in get_info response")]
+    BadChainId,
+    /// The native endpoint belongs to a different Antelope network.
+    #[error("native Telos chain ID mismatch: expected {expected}, got {actual}")]
+    NativeChainIdMismatch {
+        /// Canonical native chain ID for the configured Telos EVM network.
+        expected: B256,
+        /// Native chain ID reported by the endpoint.
+        actual: B256,
+    },
     /// The `last_irreversible_block_id` from `get_info` was not a 32-byte hex blob.
     #[error("bad block_id hex in get_info response")]
     BadBlockId,
+    /// One submission attempt exceeded the bound needed to keep the signed transaction live.
+    #[error("native transaction submission attempt timed out")]
+    SubmissionTimeout,
 }
 
 // --- Name encoding -------------------------------------------------------

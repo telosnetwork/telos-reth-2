@@ -8,9 +8,12 @@ same host is not a backup.
 
 Telos block production remains authoritative in nodeos. The pinned `telos-consensus-client`
 companion translates the native result and submits the block, receipts, and typed reconciliation
-data in one JWT-authenticated Engine API request. The execution client validates the envelope's
-schema, block identity, receipt cardinality, and bounds before committing it. Missing, malformed,
-or mismatched reconciliation data must reject the payload.
+data in one JWT-authenticated Engine API request. The current candidate validates the extension's
+schema, receipt cardinality, and bounds, but the compatibility schema does not yet carry an
+independent block identity or payload commitment. Production promotion therefore requires a
+versioned, block-bound extension plus two-way reconciliation completeness; missing, replayed,
+wrong-block, malformed, or mismatched data must reject the payload. Startup remains disabled until
+those invariants and the Telos execution rules are implemented and replay-proven.
 
 There is no production filesystem state-diff side channel. In particular, do not recreate
 `/tmp/telos-extra-fields`, do not allow a companion to publish unauthenticated JSON, and do not add
@@ -23,6 +26,14 @@ The Engine API, nodeos API, metrics, and unproxied JSON-RPC listeners bind loopb
 is exposed only through a TLS reverse proxy with request-size limits, per-method policy, connection
 limits, and abuse controls. Never publish port 8551, a JWT, a signer credential, `debug`, `admin`, or
 unrestricted trace methods.
+
+The transaction forwarder pins both network identities before using its signer: EVM chain 40 must
+pair with native chain `4667b205c6838ef70ff7988f6e8257e8be0e1284a2f59699054a018f743b1d11`,
+and EVM chain 41 must pair with native chain
+`1eaa0824707c8c16bd25145493bf062aecddfeb56c736f6ba6397f3195f33c9f`. The preflight,
+readiness check, and client all reject a mismatched nodeos endpoint. `TELOS_ENDPOINT` and
+`NODEOS_URL` must be the same configured URL so health checks cannot validate a different native
+service than the forwarder uses.
 
 ## Supported host contract
 

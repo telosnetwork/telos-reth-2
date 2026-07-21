@@ -47,7 +47,7 @@ fn main() {
             validate_execution_backend(chain_id)?;
 
             let forwarder = if telos_args.forwarder_configured() {
-                Some(TelosClient::new(telos_args.clone().into())?)
+                Some(TelosClient::new(telos_args.clone().into(), chain_id)?)
             } else {
                 None
             };

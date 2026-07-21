@@ -7,13 +7,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use alloy_primitives::{keccak256, Bytes, B256, U256};
+use alloy_consensus::{transaction::SignerRecoverable, Transaction};
+use alloy_eips::eip2718::Decodable2718;
+use alloy_primitives::{b256, keccak256, Bytes, B256, U256};
 use jsonrpsee::server::RpcModule;
 use jsonrpsee_types::{ErrorObject, ErrorObjectOwned};
 use reth_ethereum_primitives::TransactionSigned;
 use reth_rpc_eth_types::EthApiError;
 use secp256k1::SecretKey;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use tracing::{debug, error, info, warn};
 
 use crate::antelope::{
@@ -43,6 +46,23 @@ const MAX_SIGNER_KEY_FILE_BYTES: u64 = 256;
 
 /// Maximum canonical EIP-2718 transaction size accepted by the forwarder.
 const MAX_RAW_TRANSACTION_BYTES: usize = 256 * 1024;
+
+/// Maximum attempts for a prepared native-chain submission, including the first attempt.
+const MAX_FORWARD_ATTEMPTS: usize = 6;
+
+/// Maximum attempts to obtain a current native-chain reference block before signing.
+const MAX_PREPARATION_ATTEMPTS: usize = 3;
+
+/// Bounds each ambiguous push attempt so every retry finishes before the 60-second expiration.
+const SUBMISSION_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Canonical Telos Zero mainnet chain ID paired with EVM chain ID 40.
+const TELOS_MAINNET_NATIVE_CHAIN_ID: B256 =
+    b256!("4667b205c6838ef70ff7988f6e8257e8be0e1284a2f59699054a018f743b1d11");
+
+/// Canonical Telos Zero testnet chain ID paired with EVM chain ID 41.
+const TELOS_TESTNET_NATIVE_CHAIN_ID: B256 =
+    b256!("1eaa0824707c8c16bd25145493bf062aecddfeb56c736f6ba6397f3195f33c9f");
 
 /// Arguments for constructing a [`TelosClient`].
 #[derive(Clone, Default)]
@@ -108,6 +128,9 @@ pub enum TelosClientError {
     /// HTTP client construction failed.
     #[error("failed to build Telos HTTP client: {0}")]
     Http(#[from] reqwest::Error),
+    /// The configured EVM chain is not a supported Telos network.
+    #[error("Telos transaction forwarding only supports EVM chain IDs 40 and 41, got {0}")]
+    UnsupportedEvmChainId(u64),
 }
 
 /// A client that forwards signed Ethereum transactions to the Telos native chain
@@ -127,8 +150,15 @@ struct TelosClientInner {
     action_name: u64,
     secret_key: SecretKey,
     http_client: reqwest::Client,
+    expected_evm_chain_id: u64,
+    expected_native_chain_id: B256,
     gas_cache_seconds: u32,
     gas_price_cache: Mutex<Option<(Instant, U256)>>,
+}
+
+struct PreparedSubmission {
+    payload: serde_json::Value,
+    transaction_id: [u8; 32],
 }
 
 impl Drop for TelosClientInner {
@@ -234,7 +264,15 @@ fn read_signer_key(path: &Path) -> Result<String, TelosClientError> {
 
 impl TelosClient {
     /// Creates a client after validating all endpoint, identity, and key-file settings.
-    pub fn new(args: TelosClientArgs) -> Result<Self, TelosClientError> {
+    pub fn new(
+        args: TelosClientArgs,
+        expected_evm_chain_id: u64,
+    ) -> Result<Self, TelosClientError> {
+        let expected_native_chain_id = match expected_evm_chain_id {
+            40 => TELOS_MAINNET_NATIVE_CHAIN_ID,
+            41 => TELOS_TESTNET_NATIVE_CHAIN_ID,
+            _ => return Err(TelosClientError::UnsupportedEvmChainId(expected_evm_chain_id)),
+        };
         let endpoint = args.telos_endpoint.ok_or(TelosClientError::Missing("telos_endpoint"))?;
         let endpoint = validate_endpoint(&endpoint)?;
         let signer_account_str =
@@ -269,6 +307,8 @@ impl TelosClient {
                 action_name,
                 secret_key,
                 http_client,
+                expected_evm_chain_id,
+                expected_native_chain_id,
                 gas_cache_seconds,
                 gas_price_cache: Mutex::new(None),
             }),
@@ -288,17 +328,26 @@ impl TelosClient {
     /// 4. K1 canonical sign.
     /// 5. POST to `/v1/chain/push_transaction`.
     pub async fn send_to_telos(&self, tx: &[u8]) -> Result<(), EthApiError> {
-        let max_retries = 6;
+        validate_raw_transaction(tx, self.inner.expected_evm_chain_id)?;
+        let submission = self.prepare_submission_with_retry(tx).await.map_err(|err| {
+            error!(error = %err, "failed to prepare transaction for Telos native");
+            EthApiError::EvmCustom(format!("Telos forward error: {err}"))
+        })?;
         let mut backoff_ms = 50u64;
 
-        for attempt in 0..max_retries {
-            match self.submit_once(tx).await {
+        for attempt in 0..MAX_FORWARD_ATTEMPTS {
+            let result =
+                tokio::time::timeout(SUBMISSION_ATTEMPT_TIMEOUT, self.submit_prepared(&submission))
+                    .await
+                    .unwrap_or(Err(antelope::AntelopeError::SubmissionTimeout));
+            match result {
                 Ok(()) => {
                     debug!(attempt, "forwarded tx to Telos native");
                     return Ok(());
                 }
                 Err(err) => {
-                    if attempt == max_retries - 1 {
+                    let retryable = is_retryable_submission_error(&err);
+                    if !retryable || attempt == MAX_FORWARD_ATTEMPTS - 1 {
                         error!(error = %err, "giving up forwarding tx to Telos native");
                         return Err(EthApiError::EvmCustom(format!("Telos forward error: {err}")));
                     }
@@ -315,17 +364,34 @@ impl TelosClient {
         Err(EthApiError::EvmCustom("Telos forward retry loop exhausted".to_string()))
     }
 
-    async fn submit_once(&self, tx: &[u8]) -> Result<(), antelope::AntelopeError> {
-        let info = self.get_info().await?;
-
-        // Parse chain_id / block_id as 32-byte digests.
-        let chain_id_bytes = hex::decode(&info.chain_id)?;
-        if chain_id_bytes.len() != 32 {
-            return Err(antelope::AntelopeError::BadBlockId);
+    async fn prepare_submission_with_retry(
+        &self,
+        tx: &[u8],
+    ) -> Result<PreparedSubmission, antelope::AntelopeError> {
+        let mut backoff_ms = 50u64;
+        for attempt in 0..MAX_PREPARATION_ATTEMPTS {
+            match self.prepare_submission(tx).await {
+                Ok(submission) => return Ok(submission),
+                Err(error)
+                    if is_retryable_submission_error(&error) &&
+                        attempt < MAX_PREPARATION_ATTEMPTS - 1 =>
+                {
+                    warn!(attempt, error = %error, "native transaction preparation failed, retrying");
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                    backoff_ms = (backoff_ms * 2).min(2000);
+                }
+                Err(error) => return Err(error),
+            }
         }
-        let mut chain_id = [0u8; 32];
-        chain_id.copy_from_slice(&chain_id_bytes);
-        let chain_id = B256::from(chain_id);
+        unreachable!("preparation loop returns on its final attempt")
+    }
+
+    async fn prepare_submission(
+        &self,
+        tx: &[u8],
+    ) -> Result<PreparedSubmission, antelope::AntelopeError> {
+        let info = self.get_validated_info().await?;
+        let chain_id = self.inner.expected_native_chain_id;
 
         let block_id_bytes = hex::decode(&info.last_irreversible_block_id)?;
         if block_id_bytes.len() != 32 {
@@ -358,6 +424,7 @@ impl TelosClient {
 
         let digest = sig_digest(&chain_id, &packed_bytes);
         let signature = sign_k1_canonical(&self.inner.secret_key, &digest)?;
+        let transaction_id = Sha256::digest(&packed_bytes).into();
 
         let payload = serde_json::json!({
             "signatures": [signature],
@@ -366,18 +433,30 @@ impl TelosClient {
             "packed_trx": hex::encode(&packed_bytes),
         });
 
+        Ok(PreparedSubmission { payload, transaction_id })
+    }
+
+    async fn submit_prepared(
+        &self,
+        submission: &PreparedSubmission,
+    ) -> Result<(), antelope::AntelopeError> {
         let url = format!("{}/v1/chain/push_transaction", self.inner.endpoint);
-        let response = self.inner.http_client.post(&url).json(&payload).send().await?;
+        let response = self.inner.http_client.post(&url).json(&submission.payload).send().await?;
         let (status, body) = read_nodeos_response(response).await?;
         let status_code = status.as_u16();
         if !status.is_success() {
+            // A timed-out request can still have executed. The exact prepared transaction is
+            // retried, so a structured duplicate response naming its transaction ID is success.
+            if is_matching_duplicate_response(&body, &submission.transaction_id) {
+                return Ok(())
+            }
             return Err(antelope::AntelopeError::Nodeos {
                 status: status_code,
                 body: bounded_error_text(&body),
             })
         }
         let value: serde_json::Value = serde_json::from_slice(&body)?;
-        if let Some(error) = transaction_response_error(&value) {
+        if let Err(error) = validate_transaction_response(&value, &submission.transaction_id) {
             return Err(antelope::AntelopeError::Nodeos {
                 status: status_code,
                 body: truncate_error_text(&error),
@@ -417,7 +496,6 @@ impl TelosClient {
                             None::<()>,
                         )
                     })?;
-                    validate_raw_transaction(&bytes).map_err(EthApiError::into_rpc_err)?;
                     let hash: B256 = keccak256(&bytes);
                     info!(target: "telos::forward", tx_hash = %hash, bytes = bytes.len(), "forwarding tx to Telos native");
                     if let Err(err) = client.send_to_telos(&bytes).await {
@@ -481,6 +559,8 @@ impl TelosClient {
         }
 
         // Cache miss — fetch from nodeos.
+        // Validate the endpoint identity before trusting network-specific contract configuration.
+        self.get_validated_info().await?;
         let url = format!("{}/v1/chain/get_table_rows", self.inner.endpoint);
         let body = serde_json::json!({
             "code": "eosio.evm",
@@ -534,16 +614,70 @@ impl TelosClient {
         let info: GetInfoResponse = serde_json::from_slice(&body)?;
         Ok(info)
     }
+
+    async fn get_validated_info(&self) -> Result<GetInfoResponse, antelope::AntelopeError> {
+        let info = self.get_info().await?;
+        validate_native_chain_id(&info.chain_id, self.inner.expected_native_chain_id)?;
+        Ok(info)
+    }
 }
 
-fn validate_raw_transaction(raw: &[u8]) -> Result<(), EthApiError> {
+fn validate_raw_transaction(raw: &[u8], expected_chain_id: u64) -> Result<(), EthApiError> {
     if raw.len() > MAX_RAW_TRANSACTION_BYTES {
         return Err(EthApiError::EvmCustom(format!(
             "raw transaction exceeds {MAX_RAW_TRANSACTION_BYTES} bytes"
         )))
     }
-    reth_rpc_eth_types::utils::recover_raw_transaction::<TransactionSigned>(raw)?;
+    if raw.is_empty() {
+        return Err(EthApiError::EmptyRawTransactionData)
+    }
+
+    let transaction = TransactionSigned::decode_2718_exact(raw)
+        .map_err(|_| EthApiError::FailedToDecodeSignedTransaction)?;
+    let chain_id = transaction.chain_id();
+    if matches!(&transaction, TransactionSigned::Legacy(_)) && chain_id == Some(3) {
+        return Err(EthApiError::EvmCustom(
+            "legacy chain-ID-3 transactions are reserved for native Telos block ingestion"
+                .to_string(),
+        ))
+    }
+    let chain_id = chain_id.ok_or_else(|| {
+        EthApiError::EvmCustom(format!(
+            "unprotected transactions are not accepted; expected Telos EVM chain ID {expected_chain_id}"
+        ))
+    })?;
+    if chain_id != expected_chain_id {
+        return Err(EthApiError::EvmCustom(format!(
+            "transaction chain ID {chain_id} does not match configured Telos EVM chain ID {expected_chain_id}"
+        )))
+    }
+    transaction.try_into_recovered().map_err(|_| EthApiError::InvalidTransactionSignature)?;
     Ok(())
+}
+
+fn validate_native_chain_id(raw: &str, expected: B256) -> Result<B256, antelope::AntelopeError> {
+    let bytes: [u8; 32] =
+        hex::decode(raw)?.try_into().map_err(|_| antelope::AntelopeError::BadChainId)?;
+    let actual = B256::from(bytes);
+    if actual != expected {
+        return Err(antelope::AntelopeError::NativeChainIdMismatch { expected, actual })
+    }
+    Ok(actual)
+}
+
+fn is_retryable_submission_error(error: &antelope::AntelopeError) -> bool {
+    match error {
+        antelope::AntelopeError::Http(error) => {
+            error.is_connect() || error.is_timeout() || error.is_body()
+        }
+        // Nodeos reports permanent contract and validation exceptions as HTTP 500. Only retry
+        // statuses that identify timeout, throttling, or an unavailable proxy/service.
+        antelope::AntelopeError::Nodeos { status, .. } => {
+            matches!(*status, 408 | 425 | 429 | 502..=504)
+        }
+        antelope::AntelopeError::SubmissionTimeout => true,
+        _ => false,
+    }
 }
 
 async fn read_nodeos_response(
@@ -586,30 +720,79 @@ fn truncate_error_text(text: &str) -> String {
     format!("{}{SUFFIX}", &text[..end])
 }
 
-/// Inspects a `/v1/chain/push_transaction` JSON response and returns
-/// `Some(error)` if nodeos reports the transaction failed, or `None` if it
-/// executed cleanly. The push endpoint returns HTTP 200 even for transactions
-/// that revert or run into resource exhaustion, so we have to look inside the
-/// response body to surface real failures rather than phantom-success hashes.
-fn transaction_response_error(value: &serde_json::Value) -> Option<String> {
+/// Validates that nodeos executed the exact packed transaction that was submitted.
+fn validate_transaction_response(
+    value: &serde_json::Value,
+    expected_transaction_id: &[u8; 32],
+) -> Result<(), String> {
     if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
-        return Some(format!("nodeos response error: {error}"));
+        return Err(format!("nodeos response error: {error}"))
     }
-    let processed = value.get("processed")?;
-    if let Some(status) = processed
-        .pointer("/receipt/status")
+
+    let transaction_id = value
+        .get("transaction_id")
         .and_then(serde_json::Value::as_str)
-        .filter(|status| *status != "executed")
-    {
-        return Some(format!("nodeos transaction status {status}"));
+        .ok_or_else(|| "nodeos response is missing a string transaction_id".to_string())?;
+    let transaction_id = hex::decode(transaction_id)
+        .map_err(|_| "nodeos response contains a malformed transaction_id".to_string())?;
+    if transaction_id.as_slice() != expected_transaction_id {
+        return Err(format!(
+            "nodeos transaction_id does not match submitted transaction {}",
+            hex::encode(expected_transaction_id)
+        ))
     }
+
+    let processed = value
+        .get("processed")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "nodeos response is missing a processed object".to_string())?;
     if let Some(exception) = processed.get("except").filter(|exception| !exception.is_null()) {
-        return Some(format!("nodeos transaction exception: {exception}"));
+        return Err(format!("nodeos transaction exception: {exception}"))
     }
     if let Some(exception) = processed.get("except_ptr").filter(|exception| !exception.is_null()) {
-        return Some(format!("nodeos transaction exception: {exception}"));
+        return Err(format!("nodeos transaction exception: {exception}"))
     }
-    None
+    let status = processed
+        .get("receipt")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|receipt| receipt.get("status"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            "nodeos response is missing processed.receipt.status as a string".to_string()
+        })?;
+    if status != "executed" {
+        return Err(format!("nodeos transaction status {status}"))
+    }
+    Ok(())
+}
+
+fn is_matching_duplicate_response(body: &[u8], expected_transaction_id: &[u8; 32]) -> bool {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else { return false };
+    let Some(error) = value.get("error").and_then(serde_json::Value::as_object) else {
+        return false
+    };
+    if error.get("code").and_then(serde_json::Value::as_u64) != Some(3_040_008) ||
+        error.get("name").and_then(serde_json::Value::as_str) != Some("tx_duplicate")
+    {
+        return false
+    }
+    json_contains_string(
+        &serde_json::Value::Object(error.clone()),
+        &hex::encode(expected_transaction_id),
+    )
+}
+
+fn json_contains_string(value: &serde_json::Value, needle: &str) -> bool {
+    match value {
+        serde_json::Value::String(value) => value.contains(needle),
+        serde_json::Value::Array(values) => {
+            values.iter().any(|value| json_contains_string(value, needle))
+        }
+        serde_json::Value::Object(values) => {
+            values.values().any(|value| json_contains_string(value, needle))
+        }
+        _ => false,
+    }
 }
 
 /// Parses the `gas_price` field from an `eosio.evm` config row.
@@ -632,9 +815,9 @@ mod tests {
     use alloy_eips::Encodable2718;
     use alloy_primitives::{b256, bytes, hex, Signature, TxKind};
 
-    fn canonical_transaction() -> Vec<u8> {
+    fn canonical_transaction(chain_id: Option<u64>) -> Vec<u8> {
         let tx = TxLegacy {
-            chain_id: Some(1),
+            chain_id,
             nonce: 0x18,
             gas_price: 0xfa56ea00,
             gas_limit: 119_902,
@@ -686,47 +869,204 @@ mod tests {
 
     #[test]
     fn detects_failed_receipt_status() {
+        let expected_transaction_id = [0xabu8; 32];
         let value = serde_json::json!({
-            "transaction_id": "abc",
+            "transaction_id": hex::encode(expected_transaction_id),
             "processed": { "receipt": { "status": "hard_fail" } }
         });
-        assert!(transaction_response_error(&value).unwrap().contains("hard_fail"));
+        assert!(validate_transaction_response(&value, &expected_transaction_id)
+            .unwrap_err()
+            .contains("hard_fail"));
     }
 
     #[test]
     fn detects_top_level_error() {
+        let expected_transaction_id = [0xabu8; 32];
         let value = serde_json::json!({
             "error": { "code": 3050003, "message": "incorrect nonce" }
         });
-        assert!(transaction_response_error(&value).unwrap().contains("incorrect nonce"));
+        assert!(validate_transaction_response(&value, &expected_transaction_id)
+            .unwrap_err()
+            .contains("incorrect nonce"));
     }
 
     #[test]
     fn passes_clean_executed_response() {
+        let expected_transaction_id = [0xabu8; 32];
         let value = serde_json::json!({
-            "transaction_id": "abc",
+            "transaction_id": hex::encode(expected_transaction_id),
             "processed": { "receipt": { "status": "executed" } }
         });
-        assert!(transaction_response_error(&value).is_none());
+        assert!(validate_transaction_response(&value, &expected_transaction_id).is_ok());
+    }
+
+    #[test]
+    fn rejects_incomplete_success_response() {
+        let expected_transaction_id = [0xabu8; 32];
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({ "transaction_id": hex::encode(expected_transaction_id) }),
+            serde_json::json!({
+                "transaction_id": hex::encode(expected_transaction_id),
+                "processed": {}
+            }),
+            serde_json::json!({
+                "transaction_id": hex::encode(expected_transaction_id),
+                "processed": { "receipt": {} }
+            }),
+        ] {
+            assert!(validate_transaction_response(&value, &expected_transaction_id).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_mismatched_transaction_identity() {
+        let expected_transaction_id = [0xabu8; 32];
+        let value = serde_json::json!({
+            "transaction_id": hex::encode([0xcdu8; 32]),
+            "processed": { "receipt": { "status": "executed" } }
+        });
+        assert!(validate_transaction_response(&value, &expected_transaction_id)
+            .unwrap_err()
+            .contains("does not match"));
+    }
+
+    #[test]
+    fn accepts_only_matching_structured_duplicate_response() {
+        let expected_transaction_id = [0xabu8; 32];
+        let expected_hex = hex::encode(expected_transaction_id);
+        let matching = serde_json::json!({
+            "code": 500,
+            "error": {
+                "code": 3040008,
+                "name": "tx_duplicate",
+                "what": "Duplicate transaction",
+                "details": [{ "message": format!("duplicate transaction {expected_hex}") }]
+            }
+        });
+        assert!(is_matching_duplicate_response(
+            &serde_json::to_vec(&matching).unwrap(),
+            &expected_transaction_id,
+        ));
+
+        for non_matching in [
+            serde_json::json!({
+                "error": {
+                    "code": 3040008,
+                    "name": "tx_duplicate",
+                    "details": [{ "message": hex::encode([0xcdu8; 32]) }]
+                }
+            }),
+            serde_json::json!({
+                "error": {
+                    "code": 3040008,
+                    "name": "different_error",
+                    "details": [{ "message": expected_hex }]
+                }
+            }),
+        ] {
+            assert!(!is_matching_duplicate_response(
+                &serde_json::to_vec(&non_matching).unwrap(),
+                &expected_transaction_id,
+            ));
+        }
     }
 
     #[test]
     fn accepts_canonical_recoverable_raw_transaction() {
-        assert!(validate_raw_transaction(&canonical_transaction()).is_ok());
+        assert!(validate_raw_transaction(&canonical_transaction(Some(40)), 40).is_ok());
+    }
+
+    #[test]
+    fn rejects_transaction_for_another_evm_chain() {
+        let error =
+            validate_raw_transaction(&canonical_transaction(Some(41)), 40).unwrap_err().to_string();
+        assert!(error.contains("does not match"));
+    }
+
+    #[test]
+    fn rejects_legacy_chain_id_three_before_sender_recovery() {
+        let transaction: TransactionSigned = TxLegacy { chain_id: Some(3), ..Default::default() }
+            .into_signed(Signature::new(U256::MAX, U256::ZERO, false))
+            .into();
+        let error =
+            validate_raw_transaction(&transaction.encoded_2718(), 40).unwrap_err().to_string();
+        assert!(error.contains("chain-ID-3"));
+    }
+
+    #[test]
+    fn rejects_unprotected_legacy_transaction() {
+        let error =
+            validate_raw_transaction(&canonical_transaction(None), 40).unwrap_err().to_string();
+        assert!(error.contains("unprotected"));
+    }
+
+    #[test]
+    fn rejects_unsupported_expected_evm_chain_at_construction() {
+        let error = TelosClient::new(TelosClientArgs::default(), 1).unwrap_err();
+        assert!(matches!(error, TelosClientError::UnsupportedEvmChainId(1)));
+    }
+
+    #[test]
+    fn pins_canonical_native_chain_ids() {
+        assert_eq!(
+            validate_native_chain_id(
+                "4667b205c6838ef70ff7988f6e8257e8be0e1284a2f59699054a018f743b1d11",
+                TELOS_MAINNET_NATIVE_CHAIN_ID,
+            )
+            .unwrap(),
+            TELOS_MAINNET_NATIVE_CHAIN_ID
+        );
+        assert_eq!(
+            validate_native_chain_id(
+                "1eaa0824707c8c16bd25145493bf062aecddfeb56c736f6ba6397f3195f33c9f",
+                TELOS_TESTNET_NATIVE_CHAIN_ID,
+            )
+            .unwrap(),
+            TELOS_TESTNET_NATIVE_CHAIN_ID
+        );
+        assert!(matches!(
+            validate_native_chain_id(
+                "1eaa0824707c8c16bd25145493bf062aecddfeb56c736f6ba6397f3195f33c9f",
+                TELOS_MAINNET_NATIVE_CHAIN_ID,
+            ),
+            Err(antelope::AntelopeError::NativeChainIdMismatch { .. })
+        ));
+        assert!(matches!(
+            validate_native_chain_id("00", TELOS_MAINNET_NATIVE_CHAIN_ID),
+            Err(antelope::AntelopeError::BadChainId)
+        ));
     }
 
     #[test]
     fn rejects_trailing_raw_transaction_bytes() {
-        let mut transaction = canonical_transaction();
+        let mut transaction = canonical_transaction(Some(40));
         transaction.push(0);
-        assert!(validate_raw_transaction(&transaction).is_err());
+        assert!(validate_raw_transaction(&transaction, 40).is_err());
     }
 
     #[test]
     fn rejects_oversized_raw_transaction() {
         let transaction = vec![0; MAX_RAW_TRANSACTION_BYTES + 1];
-        let error = validate_raw_transaction(&transaction).unwrap_err().to_string();
+        let error = validate_raw_transaction(&transaction, 40).unwrap_err().to_string();
         assert!(error.contains("exceeds"));
+    }
+
+    #[test]
+    fn retries_only_transient_nodeos_statuses() {
+        for status in [408, 425, 429, 502, 503, 504] {
+            assert!(is_retryable_submission_error(&antelope::AntelopeError::Nodeos {
+                status,
+                body: String::new(),
+            }));
+        }
+        for status in [200, 400, 401, 403, 404, 422, 500, 501, 505, 599] {
+            assert!(!is_retryable_submission_error(&antelope::AntelopeError::Nodeos {
+                status,
+                body: String::new(),
+            }));
+        }
+        assert!(is_retryable_submission_error(&antelope::AntelopeError::SubmissionTimeout));
     }
 
     #[test]
