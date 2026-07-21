@@ -104,7 +104,7 @@ where
         if indexed_hash != Some(hash) {
             eyre::bail!(
                 "canonical Telos block {block_number} hash/index mismatch: body {hash}, index {indexed_hash:?}"
-            )
+            );
         }
         let body_indices = self
             .block_body_indices(block_number)
@@ -119,7 +119,7 @@ where
             eyre::bail!(
                 "Telos block {block_number} body/index transaction-count mismatch: body {}, index {indexed_transaction_count}",
                 block.body.transactions.len()
-            )
+            );
         }
         let sender_count = if body_indices.tx_count == 0 {
             0
@@ -165,7 +165,7 @@ pub fn validate_telos_startup(
             anchor.parent_block_number,
             anchor.parent_block_hash,
             actual_hash
-        )
+        );
     }
 
     provider.probe_historical_state(anchor.parent_block_hash)?;
@@ -173,7 +173,7 @@ pub fn validate_telos_startup(
     if provider.sender_recovery_pruning_enabled()? {
         eyre::bail!(
             "Telos sender-recovery pruning is unsafe and must be disabled; embedded Telos senders cannot be reconstructed by Ethereum sender recovery"
-        )
+        );
     }
 
     validate_canonical_sidecar_coverage(provider, anchor, sidecar_store)?;
@@ -191,7 +191,7 @@ fn validate_canonical_sidecar_coverage(
         eyre::bail!(
             "canonical Telos tip {best} is below execution anchor {}",
             anchor.parent_block_number
-        )
+        );
     }
 
     let mut covered_number = anchor.parent_block_number;
@@ -204,13 +204,13 @@ fn validate_canonical_sidecar_coverage(
                 "Telos finalized sidecar coverage block {} is below execution anchor {}",
                 marker.block_number,
                 anchor.parent_block_number
-            )
+            );
         }
         if marker.block_number > best {
             eyre::bail!(
                 "Telos finalized sidecar coverage block {} is above canonical tip {best}",
                 marker.block_number
-            )
+            );
         }
         if marker.block_number == anchor.parent_block_number {
             if marker.block_hash != anchor.parent_block_hash {
@@ -218,7 +218,7 @@ fn validate_canonical_sidecar_coverage(
                     "Telos finalized sidecar coverage at the anchor height binds {}, expected {}",
                     marker.block_hash,
                     anchor.parent_block_hash
-                )
+                );
             }
         } else {
             let block =
@@ -234,7 +234,7 @@ fn validate_canonical_sidecar_coverage(
                     marker.block_number,
                     marker.block_hash,
                     block.hash
-                )
+                );
             }
             let sidecar =
                 sidecar_store.get_accepted_by_hash(marker.block_hash)?.ok_or_else(|| {
@@ -284,7 +284,7 @@ fn validate_canonical_sidecar_coverage(
             eyre::bail!(
                 "canonical Telos block {number} parent mismatch: expected {parent_hash}, got {}",
                 block.parent_hash
-            )
+            );
         }
 
         let sidecar = sidecar_store.get_accepted_by_hash(block.hash)?.ok_or_else(|| {
@@ -330,7 +330,7 @@ fn validate_finalized_marker_binding(
             block.hash,
             block.sender_count,
             block.transaction_count
-        )
+        );
     }
     let expected_transaction_count = u64::try_from(block.transaction_count)
         .map_err(|_| eyre::eyre!("Telos block {number} transaction count exceeds u64"))?;
@@ -344,7 +344,7 @@ fn validate_finalized_marker_binding(
         eyre::bail!(
             "accepted Telos sidecar binding mismatch at finalized canonical block {number} ({})",
             block.hash
-        )
+        );
     }
     Ok(())
 }
@@ -364,7 +364,7 @@ fn validate_coverage_binding(
             block.hash,
             block.sender_count,
             block.transaction_count
-        )
+        );
     }
     let expected_transaction_count = u64::try_from(block.transaction_count)
         .map_err(|_| eyre::eyre!("Telos block {number} transaction count exceeds u64"))?;
@@ -378,7 +378,7 @@ fn validate_coverage_binding(
         eyre::bail!(
             "accepted Telos sidecar binding mismatch at canonical block {number} ({})",
             block.hash
-        )
+        );
     }
     let execution = sidecar.extra_fields.execution.as_ref().ok_or_else(|| {
         eyre::eyre!("accepted Telos sidecar for block {number} has no execution metadata")
@@ -387,7 +387,7 @@ fn validate_coverage_binding(
         eyre::bail!(
             "accepted Telos execution-context discontinuity at canonical block {number} ({})",
             block.hash
-        )
+        );
     }
     Ok(())
 }
@@ -424,7 +424,7 @@ mod tests {
         fn probe_historical_state(&self, block_hash: B256) -> eyre::Result<()> {
             self.probes.lock().unwrap().push(block_hash);
             if let Some(error) = self.state_error {
-                eyre::bail!(error)
+                eyre::bail!(error);
             }
             Ok(())
         }

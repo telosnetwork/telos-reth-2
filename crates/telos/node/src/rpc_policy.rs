@@ -193,7 +193,7 @@ pub fn enforce_exact_auth_rpc_surface(module: &mut jsonrpsee::RpcModule<()>) -> 
     if actual != expected {
         eyre::bail!(
             "Telos authenticated RPC surface mismatch: expected {expected:?}, got {actual:?}"
-        )
+        );
     }
     Ok(())
 }
@@ -254,7 +254,7 @@ pub fn enforce_exact_public_rpc_surface(
             let missing = expected.difference(&actual).copied().collect::<Vec<_>>();
             eyre::bail!(
                 "Telos {transport} RPC surface mismatch: unexpected {unexpected:?}, missing {missing:?}"
-            )
+            );
         }
     }
     Ok(())

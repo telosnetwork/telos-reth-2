@@ -97,13 +97,13 @@ impl TelosCheckpointManifest {
     pub fn load(path: &Path) -> eyre::Result<(Self, B256)> {
         let metadata = reth_fs_util::metadata(path)?;
         if !metadata.is_file() {
-            eyre::bail!("Telos checkpoint manifest is not a regular file: {}", path.display())
+            eyre::bail!("Telos checkpoint manifest is not a regular file: {}", path.display());
         }
         if metadata.len() > MAX_MANIFEST_BYTES {
             eyre::bail!(
                 "Telos checkpoint manifest exceeds {MAX_MANIFEST_BYTES} bytes: {}",
                 path.display()
-            )
+            );
         }
 
         let bytes = reth_fs_util::read(path)?;
@@ -121,13 +121,15 @@ impl TelosCheckpointManifest {
                 "unsupported Telos checkpoint manifest version {}; expected {}",
                 self.version,
                 TELOS_CHECKPOINT_MANIFEST_VERSION
-            )
+            );
         }
 
         let canonical_spec = match self.canonical_chain.chain_id {
             40 => TELOS_MAINNET.clone(),
             41 => TELOS_TESTNET.clone(),
-            chain_id => eyre::bail!("unsupported Telos checkpoint chain ID {chain_id}"),
+            chain_id => {
+                eyre::bail!("unsupported Telos checkpoint chain ID {chain_id}");
+            }
         };
         if self.canonical_chain.genesis_hash != canonical_spec.genesis_hash() {
             eyre::bail!(
@@ -135,7 +137,7 @@ impl TelosCheckpointManifest {
                 self.canonical_chain.chain_id,
                 self.canonical_chain.genesis_hash,
                 canonical_spec.genesis_hash()
-            )
+            );
         }
 
         self.execution_anchor
@@ -146,20 +148,22 @@ impl TelosCheckpointManifest {
                 "checkpoint chain ID {} does not match canonical chain ID {}",
                 self.execution_anchor.chain.chain_id,
                 self.canonical_chain.chain_id
-            )
+            );
         }
         if self.execution_anchor.parent_block_number == 0 {
-            eyre::bail!("Telos checkpoint anchor must be a nonzero block")
+            eyre::bail!("Telos checkpoint anchor must be a nonzero block");
         }
         if self.execution_anchor.chain.genesis_hash != self.execution_anchor.parent_block_hash {
             eyre::bail!(
                 "sparse checkpoint database genesis {} must equal anchor hash {}",
                 self.execution_anchor.chain.genesis_hash,
                 self.execution_anchor.parent_block_hash
-            )
+            );
         }
         if self.actual_state_root == EMPTY_ROOT_HASH || self.actual_state_root == B256::ZERO {
-            eyre::bail!("Telos checkpoint actual state root must be a nonzero, non-empty trie root")
+            eyre::bail!(
+                "Telos checkpoint actual state root must be a nonzero, non-empty trie root"
+            );
         }
         if [
             self.header_rlp_sha256,
@@ -171,7 +175,7 @@ impl TelosCheckpointManifest {
         ]
         .contains(&B256::ZERO)
         {
-            eyre::bail!("Telos checkpoint manifest contains a missing SHA-256 provenance digest")
+            eyre::bail!("Telos checkpoint manifest contains a missing SHA-256 provenance digest");
         }
 
         let header_bytes = decode_header_rlp(&self.header_rlp)?;
@@ -181,13 +185,13 @@ impl TelosCheckpointManifest {
                 "Telos checkpoint header SHA-256 mismatch: manifest {}, decoded bytes {}",
                 self.header_rlp_sha256,
                 header_digest
-            )
+            );
         }
         let mut input = header_bytes.as_slice();
         let header = Header::decode(&mut input)
             .map_err(|error| eyre::eyre!("invalid Telos checkpoint header RLP: {error}"))?;
         if !input.is_empty() {
-            eyre::bail!("Telos checkpoint header file contains trailing bytes")
+            eyre::bail!("Telos checkpoint header file contains trailing bytes");
         }
 
         let header_hash = header.hash_slow();
@@ -196,14 +200,14 @@ impl TelosCheckpointManifest {
                 "Telos checkpoint header hash mismatch: header {}, anchor {}",
                 header_hash,
                 self.execution_anchor.parent_block_hash
-            )
+            );
         }
         if header.number != self.execution_anchor.parent_block_number {
             eyre::bail!(
                 "Telos checkpoint header number {} does not match anchor {}",
                 header.number,
                 self.execution_anchor.parent_block_number
-            )
+            );
         }
         validate_sparse_anchor_header(&header)?;
         self.validate_native_anchor(&header)?;
@@ -222,7 +226,7 @@ impl TelosCheckpointManifest {
                 "native Telos chain mismatch: manifest {}, expected {}",
                 self.native_anchor.chain_id,
                 expected_chain_id
-            )
+            );
         }
         if self.native_anchor.block_number == 0 ||
             self.native_anchor.first_child_block_number !=
@@ -230,7 +234,7 @@ impl TelosCheckpointManifest {
                     eyre::eyre!("native checkpoint block number has no representable child")
                 })?
         {
-            eyre::bail!("native checkpoint first child is not the exact anchor successor")
+            eyre::bail!("native checkpoint first child is not the exact anchor successor");
         }
         let embedded_block_id = B256::try_from(header.extra_data.as_ref()).map_err(|_| {
             eyre::eyre!("Telos checkpoint header extraData is not an exact native block ID")
@@ -240,7 +244,7 @@ impl TelosCheckpointManifest {
                 "checkpoint header native block ID {} does not match attested {}",
                 embedded_block_id,
                 self.native_anchor.block_id
-            )
+            );
         }
         for (label, number, id) in [
             ("anchor", self.native_anchor.block_number, self.native_anchor.block_id),
@@ -254,7 +258,7 @@ impl TelosCheckpointManifest {
                 id.as_slice()[..4].try_into().expect("B256 always contains four prefix bytes"),
             );
             if encoded_number != number {
-                eyre::bail!("native {label} ID encodes block {encoded_number}, expected {number}")
+                eyre::bail!("native {label} ID encodes block {encoded_number}, expected {number}");
             }
         }
         if self.native_anchor.first_child_block_id == self.native_anchor.block_id ||
@@ -262,14 +266,14 @@ impl TelosCheckpointManifest {
             self.native_anchor.evm_first_child_block_hash ==
                 self.execution_anchor.parent_block_hash
         {
-            eyre::bail!("native checkpoint first-child binding is missing")
+            eyre::bail!("native checkpoint first-child binding is missing");
         }
         if self.native_anchor.starting_gas_price != self.execution_anchor.starting_gas_price ||
             self.native_anchor.starting_revision != self.execution_anchor.starting_revision
         {
             eyre::bail!(
                 "native checkpoint first-child execution context does not match the execution anchor"
-            )
+            );
         }
         Ok(())
     }
@@ -297,7 +301,7 @@ impl TelosCheckpointManifest {
     pub fn verify_state_dump(&self, path: &Path) -> eyre::Result<()> {
         let metadata = reth_fs_util::metadata(path)?;
         if !metadata.is_file() {
-            eyre::bail!("Telos state dump is not a regular file: {}", path.display())
+            eyre::bail!("Telos state dump is not a regular file: {}", path.display());
         }
 
         let actual = sha256_reader(BufReader::new(File::open(path)?))?;
@@ -307,7 +311,7 @@ impl TelosCheckpointManifest {
                 path.display(),
                 self.state_dump_sha256,
                 actual
-            )
+            );
         }
         Ok(())
     }
@@ -319,13 +323,13 @@ impl TelosCheckpointManifest {
 /// empty body whose transaction or receipt roots contradict its canonical anchor header.
 pub fn validate_sparse_anchor_header(header: &Header) -> eyre::Result<()> {
     if header.number == 0 {
-        eyre::bail!("Telos checkpoint anchor must be a nonzero block")
+        eyre::bail!("Telos checkpoint anchor must be a nonzero block");
     }
     if header.state_root != EMPTY_ROOT_HASH {
         eyre::bail!(
             "Telos checkpoint canonical header must carry EMPTY_ROOT_HASH, got {}",
             header.state_root
-        )
+        );
     }
     if header.transactions_root != EMPTY_ROOT_HASH ||
         header.receipts_root != EMPTY_ROOT_HASH ||
@@ -335,7 +339,7 @@ pub fn validate_sparse_anchor_header(header: &Header) -> eyre::Result<()> {
     {
         eyre::bail!(
             "Telos sparse checkpoint anchor must have an empty transaction, receipt, and ommer body"
-        )
+        );
     }
     if header.base_fee_per_gas.is_some() ||
         header.withdrawals_root.is_some() ||
@@ -346,7 +350,9 @@ pub fn validate_sparse_anchor_header(header: &Header) -> eyre::Result<()> {
         header.block_access_list_hash.is_some() ||
         header.slot_number.is_some()
     {
-        eyre::bail!("Telos sparse checkpoint anchor contains unsupported post-Berlin header fields")
+        eyre::bail!(
+            "Telos sparse checkpoint anchor contains unsupported post-Berlin header fields"
+        );
     }
     Ok(())
 }
@@ -390,7 +396,7 @@ impl TelosCheckpointAudit {
             eyre::bail!(
                 "recomputed checkpoint state root {computed_state_root} does not match manifest {}",
                 manifest.actual_state_root
-            )
+            );
         }
         Ok(Self {
             version: TELOS_CHECKPOINT_AUDIT_VERSION,
@@ -420,7 +426,7 @@ impl TelosCheckpointAudit {
             )
         })?;
         if !metadata.is_file() || metadata.len() > MAX_MANIFEST_BYTES {
-            eyre::bail!("invalid completed Telos checkpoint audit {}", audit_path.display())
+            eyre::bail!("invalid completed Telos checkpoint audit {}", audit_path.display());
         }
         let actual: Self = reth_fs_util::read_json_file(&audit_path)?;
         let expected = Self::completed(&manifest, manifest_sha256, manifest.actual_state_root)?;
@@ -429,7 +435,7 @@ impl TelosCheckpointAudit {
                 "completed Telos checkpoint audit {} does not match manifest {}",
                 audit_path.display(),
                 manifest_path.display()
-            )
+            );
         }
         Ok(manifest)
     }
@@ -456,10 +462,10 @@ pub fn checkpoint_execution_anchor_path(manifest_path: &Path) -> PathBuf {
 fn decode_header_rlp(encoded: &str) -> eyre::Result<Vec<u8>> {
     let encoded = encoded.strip_prefix("0x").unwrap_or(encoded);
     if encoded.len() > MAX_HEADER_BYTES * 2 {
-        eyre::bail!("Telos checkpoint header exceeds {MAX_HEADER_BYTES} decoded bytes")
+        eyre::bail!("Telos checkpoint header exceeds {MAX_HEADER_BYTES} decoded bytes");
     }
     if !encoded.len().is_multiple_of(2) {
-        eyre::bail!("Telos checkpoint header RLP hex has an odd length")
+        eyre::bail!("Telos checkpoint header RLP hex has an odd length");
     }
     hex::decode(encoded).map_err(|error| eyre::eyre!("invalid checkpoint header RLP hex: {error}"))
 }

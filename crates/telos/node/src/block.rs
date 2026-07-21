@@ -192,7 +192,7 @@ pub struct TelosBlockAssembler;
 
 impl<F> BlockAssembler<F> for TelosBlockAssembler
 where
-    F: for<'a> BlockExecutorFactory<Transaction = TransactionSigned, Receipt = Receipt>,
+    F: BlockExecutorFactory<Transaction = TransactionSigned, Receipt = Receipt>,
 {
     type Block = Block;
 

@@ -12,6 +12,9 @@ on:
 
 permissions: {}
 
+env:
+  RETH_DOCS_TOOLCHAIN: nightly-2026-07-17
+
 jobs:
   build:
     runs-on: ${{ github.repository == 'paradigmxyz/reth' && 'depot-ubuntu-latest-8' || 'ubuntu-latest' }}
@@ -41,7 +44,7 @@ jobs:
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (2026-07-20)
         with:
-          toolchain: nightly-2026-07-17
+          toolchain: ${{ env.RETH_DOCS_TOOLCHAIN }}
 
       - name: Build docs
         run: cd docs/vocs && bash scripts/build-cargo-docs.sh
