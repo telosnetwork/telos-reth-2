@@ -78,7 +78,7 @@ where
         let telos_handler = engine.clone();
         let mut module = engine.into_rpc_module();
         if module.remove_method("engine_newPayloadV1").is_none() {
-            eyre::bail!("stock engine_newPayloadV1 handler was not registered")
+            eyre::bail!("stock engine_newPayloadV1 handler was not registered");
         }
         module.register_async_method("engine_newPayloadV1", move |params, _ctx, _ext| {
             let engine = telos_handler.clone();

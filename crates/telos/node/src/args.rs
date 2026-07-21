@@ -76,7 +76,7 @@ impl TelosArgs {
             eyre::bail!(
                 "incomplete Telos transaction-forwarder configuration; missing {}",
                 missing.join(", ")
-            )
+            );
         }
         Ok(())
     }

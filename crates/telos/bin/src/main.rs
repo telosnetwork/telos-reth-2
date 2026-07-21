@@ -23,10 +23,10 @@ fn validate_execution_backend(chain_id: u64) -> eyre::Result<()> {
     if !matches!(chain_id, 40 | 41) {
         eyre::bail!(
             "Telos node only supports chain IDs 40 and 41; configured chain ID is {chain_id}"
-        )
+        );
     }
     if !TELOS_REVM_EXECUTION_READY {
-        eyre::bail!(MISSING_TELOS_EXECUTION_BACKEND)
+        eyre::bail!(MISSING_TELOS_EXECUTION_BACKEND);
     }
     Ok(())
 }
@@ -63,7 +63,7 @@ fn main() {
                         if !ctx.modules.replace_configured(module)? {
                             eyre::bail!(
                                 "Telos forwarder methods were not enabled on any configured RPC transport"
-                            )
+                            );
                         }
                         info!(target: "reth::cli", "Telos transaction forwarder installed");
                     }
