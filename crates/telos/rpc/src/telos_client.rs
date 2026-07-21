@@ -1,7 +1,9 @@
 //! Telos native chain client for forwarding transactions.
 
 use std::{
-    fmt, io,
+    fmt,
+    fs::OpenOptions,
+    io::{self, Read},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -18,6 +20,7 @@ use secp256k1::SecretKey;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tracing::{debug, error, info, warn};
+use zeroize::Zeroizing;
 
 use crate::antelope::{
     self, name_to_u64, now_plus, ref_block_num, ref_block_prefix, serialize_raw_action_data,
@@ -215,13 +218,51 @@ fn validate_endpoint(endpoint: &str) -> Result<String, TelosClientError> {
             "query strings and fragments are not allowed".to_string(),
         ))
     }
+    if parsed.path() != "/" {
+        return Err(TelosClientError::InvalidEndpoint(
+            "endpoint must not contain a path".to_string(),
+        ))
+    }
+    if parsed.scheme() == "http" {
+        let host = parsed.host_str().unwrap_or_default();
+        let ip_literal =
+            host.strip_prefix('[').and_then(|host| host.strip_suffix(']')).unwrap_or(host);
+        let is_loopback = host.eq_ignore_ascii_case("localhost") ||
+            ip_literal.parse::<std::net::IpAddr>().is_ok_and(|address| address.is_loopback());
+        if !is_loopback {
+            return Err(TelosClientError::InvalidEndpoint(
+                "plaintext HTTP is allowed only for an explicit loopback endpoint".to_string(),
+            ))
+        }
+    }
     Ok(endpoint.trim_end_matches('/').to_string())
 }
 
-fn read_signer_key(path: &Path) -> Result<String, TelosClientError> {
-    let metadata = std::fs::symlink_metadata(path)
+fn read_signer_key(path: &Path) -> Result<Zeroizing<Vec<u8>>, TelosClientError> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(path).map_err(|source| {
+        #[cfg(unix)]
+        if source.raw_os_error() == Some(libc::ELOOP) {
+            return TelosClientError::UnsafeKeyFile {
+                path: path.to_path_buf(),
+                reason: "must be a regular file, not a symlink",
+            }
+        }
+        TelosClientError::KeyFileIo { path: path.to_path_buf(), source }
+    })?;
+    // Validate and read the same open descriptor. This prevents a path swap between checking the
+    // file and consuming the WIF.
+    let metadata = file
+        .metadata()
         .map_err(|source| TelosClientError::KeyFileIo { path: path.to_path_buf(), source })?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
+    if !metadata.is_file() {
         return Err(TelosClientError::UnsafeKeyFile {
             path: path.to_path_buf(),
             reason: "must be a regular file, not a symlink",
@@ -246,20 +287,29 @@ fn read_signer_key(path: &Path) -> Result<String, TelosClientError> {
         }
     }
 
-    let mut contents = std::fs::read(path)
+    let mut contents = Zeroizing::new(Vec::with_capacity(metadata.len() as usize));
+    file.by_ref()
+        .take(MAX_SIGNER_KEY_FILE_BYTES + 1)
+        .read_to_end(&mut contents)
         .map_err(|source| TelosClientError::KeyFileIo { path: path.to_path_buf(), source })?;
+    if contents.is_empty() || contents.len() as u64 > MAX_SIGNER_KEY_FILE_BYTES {
+        return Err(TelosClientError::UnsafeKeyFile {
+            path: path.to_path_buf(),
+            reason: "size must be between 1 and 256 bytes",
+        })
+    }
     while matches!(contents.last(), Some(b'\r' | b'\n')) {
         contents.pop();
     }
-    let key = String::from_utf8(contents)
+    std::str::from_utf8(&contents)
         .map_err(|_| TelosClientError::InvalidKeyEncoding(path.to_path_buf()))?;
-    if key.is_empty() || key.bytes().any(|byte| byte.is_ascii_whitespace()) {
+    if contents.is_empty() || contents.iter().any(|byte| byte.is_ascii_whitespace()) {
         return Err(TelosClientError::UnsafeKeyFile {
             path: path.to_path_buf(),
             reason: "key must be a single non-empty WIF without whitespace",
         })
     }
-    Ok(key)
+    Ok(contents)
 }
 
 impl TelosClient {
@@ -289,8 +339,9 @@ impl TelosClient {
         let contract_account = ram_payer;
         let action_name = name_to_u64("raw")?;
         let signer_key = read_signer_key(&signer_key_file)?;
-        let secret_key = wif_to_secret_key(&signer_key)?;
-        drop(signer_key);
+        let signer_key = std::str::from_utf8(&signer_key)
+            .map_err(|_| TelosClientError::InvalidKeyEncoding(signer_key_file.clone()))?;
+        let secret_key = wif_to_secret_key(signer_key)?;
 
         let http_client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
@@ -634,8 +685,13 @@ fn validate_raw_transaction(raw: &[u8], expected_chain_id: u64) -> Result<(), Et
 
     let transaction = TransactionSigned::decode_2718_exact(raw)
         .map_err(|_| EthApiError::FailedToDecodeSignedTransaction)?;
+    if !matches!(&transaction, TransactionSigned::Legacy(_)) {
+        return Err(EthApiError::EvmCustom(
+            "unsupported Telos transaction type; only legacy type 0 is accepted".to_string(),
+        ))
+    }
     let chain_id = transaction.chain_id();
-    if matches!(&transaction, TransactionSigned::Legacy(_)) && chain_id == Some(3) {
+    if chain_id == Some(3) {
         return Err(EthApiError::EvmCustom(
             "legacy chain-ID-3 transactions are reserved for native Telos block ingestion"
                 .to_string(),
@@ -811,9 +867,11 @@ fn parse_evm_gas_price(raw: &str) -> Option<U256> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{SignableTransaction, TxLegacy};
+    use alloy_consensus::{SignableTransaction, TxEip2930, TxLegacy};
     use alloy_eips::Encodable2718;
     use alloy_primitives::{b256, bytes, hex, Signature, TxKind};
+    #[cfg(unix)]
+    use std::os::unix::fs::{symlink, PermissionsExt};
 
     fn canonical_transaction(chain_id: Option<u64>) -> Vec<u8> {
         let tx = TxLegacy {
@@ -975,6 +1033,59 @@ mod tests {
     #[test]
     fn accepts_canonical_recoverable_raw_transaction() {
         assert!(validate_raw_transaction(&canonical_transaction(Some(40)), 40).is_ok());
+    }
+
+    #[test]
+    fn native_endpoint_requires_https_off_host() {
+        assert_eq!(validate_endpoint("http://127.0.0.1:8888/").unwrap(), "http://127.0.0.1:8888");
+        assert_eq!(validate_endpoint("http://[::1]:8888").unwrap(), "http://[::1]:8888");
+        assert_eq!(
+            validate_endpoint("https://mainnet.telos.net").unwrap(),
+            "https://mainnet.telos.net"
+        );
+        for endpoint in
+            ["http://mainnet.telos.net", "http://192.0.2.1:8888", "https://mainnet.telos.net/base"]
+        {
+            assert!(validate_endpoint(endpoint).is_err(), "accepted unsafe endpoint {endpoint}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn signer_key_is_read_from_one_owner_only_descriptor() {
+        let directory = tempfile::tempdir().unwrap();
+        let key_path = directory.path().join("signer.wif");
+        std::fs::write(&key_path, b"test-wif\n").unwrap();
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o400)).unwrap();
+
+        let key = read_signer_key(&key_path).unwrap();
+        assert_eq!(key.as_slice(), b"test-wif");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn signer_key_rejects_symlinks_and_broad_permissions() {
+        let directory = tempfile::tempdir().unwrap();
+        let key_path = directory.path().join("signer.wif");
+        let link_path = directory.path().join("signer-link.wif");
+        std::fs::write(&key_path, b"test-wif").unwrap();
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        symlink(&key_path, &link_path).unwrap();
+
+        assert!(matches!(read_signer_key(&link_path), Err(TelosClientError::UnsafeKeyFile { .. })));
+
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o440)).unwrap();
+        assert!(matches!(read_signer_key(&key_path), Err(TelosClientError::UnsafeKeyFile { .. })));
+    }
+
+    #[test]
+    fn rejects_typed_transaction_even_for_the_expected_chain() {
+        let transaction: TransactionSigned = TxEip2930 { chain_id: 40, ..Default::default() }
+            .into_signed(Signature::new(U256::MAX, U256::ZERO, false))
+            .into();
+        let error =
+            validate_raw_transaction(&transaction.encoded_2718(), 40).unwrap_err().to_string();
+        assert!(error.contains("only legacy type 0"));
     }
 
     #[test]

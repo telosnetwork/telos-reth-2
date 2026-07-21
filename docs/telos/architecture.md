@@ -15,44 +15,56 @@ client submits two positional parameters in one JWT-authenticated request:
 engine_newPayloadV1(executionPayload, telosExtraFields)
 ```
 
-The two parameters arrive as one authenticated request, but co-location alone does not
-cryptographically bind the compatibility object to that payload. Extra fields must never be
-accepted from a filesystem or an unauthenticated endpoint. Before production, a versioned
-extension must identify the exact block and commit to its complete native state and receipt data so
-a delayed or replayed object for another payload is rejected. The current schema lacks that binding,
-which is one reason Telos startup remains disabled.
+The candidate requires V3 execution metadata in the second parameter. It names the exact block and
+parent hashes, transaction count, payload-only execution base fee, starting gas price and revision,
+and every ordered in-block context change. The complete, chain-bound extension is canonicalized,
+hashed, and persisted before Engine dispatch, so a delayed or replayed object for another payload
+or chain is rejected. Extra fields are never accepted from a filesystem or unauthenticated
+endpoint.
 
-The currently deployed companion-client object is the Telos extra-fields v1 schema. All collection
-fields required to execute a block must be present, even when empty:
+The historically deployed companion used the Telos extra-fields v1 schema; that object does not
+satisfy this candidate's execution contract. The exact companion paired with this client must send
+V3 metadata, and all collection fields required to execute a block must be present, even when empty:
 
 - account changes;
 - storage changes;
 - addresses created by `create` and `openwallet`;
 - one receipt per payload transaction.
 
-Gas-price and EVM-revision transitions remain optional because most blocks do not contain either
-transition. Future incompatible schemas require an explicit version negotiation; they must not be
-silently accepted as v1.
+The legacy scalar gas-price and revision fields are rejected. V3 carries ordered change lists,
+which may be empty, and defines a boundary equal to the transaction count as the starting context
+for the child. Future incompatible schemas require explicit version negotiation; they must not be
+silently accepted as V3.
 
 ## Validation invariants
 
 The production Telos path must fail closed. A payload is invalid when its extra fields are absent,
 malformed, oversized, replayed, bound to another block, duplicated inconsistently, or incomplete.
 Provider and database failures are internal errors and must never be converted into empty accounts
-or zero storage. The candidate enforces structural validation and provider-error handling; startup
-remains gated until block binding and two-way completeness are implemented.
+or zero storage. The candidate implements block binding, two-way state/receipt/gas reconciliation,
+provider-error handling, and durable pending/dispatched/accepted sidecar lifecycle tests. Startup
+remains gated because those invariants have not yet been qualified with the exact build and
+companion against live canonical data.
 
-Reth still executes every payload transaction with revm. Native account and storage deltas are then
-used as an authoritative reconciliation record, and native receipts are persisted. Reconciliation
-must:
+Reth still executes every payload transaction with revm. Native account and storage deltas and
+native receipts are authenticated validation records; they must never be used to overwrite a
+different local result. The only post-execution state effect currently specified is nonce-one
+materialization for a terminal native `create` event. Reconciliation must:
 
 - compare bytecode bytes, not only bytecode length;
 - hash EVM bytecode with Keccak-256;
 - apply account and storage removals;
 - prove that every locally executed account and storage mutation has an authoritative native row;
+- reject any account, storage, receipt, or gas mismatch instead of correcting local execution;
 - retain original values so an in-memory or persisted reorg can unwind cleanly;
 - reject unknown receipt types and require receipt count to equal transaction count;
 - retain transaction-root, receipt-root, logs-bloom, gas-used, and structural Engine API checks.
+
+This release accepts only authenticated type-0 transactions. Canonical receipts therefore use the
+standard untyped legacy RLP encoding, and JSON-RPC reports the transaction-indexed effective price:
+the signed gas price capped by the native fixed price authenticated by the payload. Authenticated
+typed envelopes and their receipt conversion fail closed until a separately named activation is
+implemented and qualified.
 
 Telos headers intentionally use an empty state-root placeholder and omit `baseFeePerGas`. The Telos
 payload validator may make only the documented chain-specific exceptions needed for those legacy
@@ -93,8 +105,10 @@ Every candidate must also complete the [compatibility matrix](./compatibility.md
 restore-tested Reth Storage V2 snapshot is currently an explicit launch blocker.
 
 The current candidate also has an explicit
-[Telos EVM execution-compatibility gate](./execution-compatibility.md). It must not be removed until
-the Telos revm semantics are ported to the upstream revm version and replay-proven.
+[Telos EVM execution-compatibility gate](./execution-compatibility.md). The revm 41 port is present;
+the production gate must remain closed until an exact qualification build proves live companion
+ingestion, restart/reorg behavior, and finalized parity. Historical replay and diagnostic RPC have
+a separate gate that remains closed after canonical forward execution is qualified.
 
 ## Upstream maintenance
 

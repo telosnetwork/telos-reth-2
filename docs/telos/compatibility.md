@@ -10,15 +10,16 @@ created by a different storage schema are not supported deployment inputs.
 | --- | --- | --- |
 | Telos Reth 2 | This repository at the candidate commit | Not production-qualified |
 | Upstream Reth | `v2.4.1` / `8eb210175687c9f0c889a3b6795c16781d830e3a` | Source baseline |
-| `telos-consensus-client` | `master` / `9fadee1fd565e3a7ad51c1142e2673df52bd9028` | Protocol reference only |
-| Telos extra fields | v1, second `engine_newPayloadV1` parameter | Development contract |
-| Telos EVM backend | revm 41 port not yet implemented | Production blocker |
+| `telos-consensus-client` | `agent/reth-v2-sidecars` / `3aae1cadfdd0129c58abe7ab8277fa800ef299fd` | Immutable candidate; paired live qualification pending |
+| Telos extra fields | V3 execution metadata, second `engine_newPayloadV1` parameter | Implemented by the pinned candidate pair |
+| Telos EVM backend | Isolated revm 41 port; startup gate closed | Exact-build live qualification required |
 | Reth database | Storage V2 created by this client version | Restore-test required |
-| Bootstrap snapshot | None qualified yet | Production blocker |
+| Bootstrap snapshot | Mainnet sparse candidate at EVM block `479294328`; manifest SHA-256 `c3517da39d0ee8003434ce1e8ed5f304562a86656da1c666b1609a9ea2ae342e` | Import, catch-up, restore, and live parity qualification pending |
 
-The companion reference above documents the existing two-parameter Engine API call. It is not a
-release recommendation. The first production candidate must replace it with an immutable,
-reviewed companion tag or commit and record the passing contract-test and replay evidence.
+The companion reference above is an exact signed candidate commit, not a floating deployment
+recommendation. It becomes an eligible production pair only after its required CI and artifact
+build pass and that exact companion artifact completes checkpoint catch-up, restart, and live parity
+qualification with the exact Telos Reth artifact.
 
 ## Required release record
 

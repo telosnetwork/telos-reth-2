@@ -8,20 +8,60 @@ static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::ne
 #[cfg(all(feature = "jemalloc", unix))]
 use reth_cli_util::allocator::tikv_jemalloc_sys as _;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use reth::{
     cli::Cli,
+    rpc::builder::RethRpcModule,
     version::{default_reth_version_metadata, try_init_version_metadata, RethCliVersionConsts},
 };
-use reth_node_telos::{TelosArgs, TelosChainSpecParser, TelosNode, TELOS_REVM_EXECUTION_READY};
+use reth_cli_runner::CliRunner;
+use reth_ethereum_cli::ExtendedCommand;
+use reth_node_telos::{
+    rpc_policy::{
+        enforce_exact_auth_rpc_surface, enforce_exact_public_rpc_surface, enforce_telos_rpc_policy,
+        validate_telos_transaction_count_block, REPLAY_UNSAFE_RPC_METHODS,
+        TELOS_FORWARDER_REQUIRED_RPC_METHODS, TELOS_UNSUPPORTED_AUTH_METHODS,
+        TELOS_UNSUPPORTED_RPC_METHODS,
+    },
+    sidecar::{ProviderTelosSidecarStore, TelosChainIdentity, TelosSidecarTables},
+    startup::validate_telos_startup,
+    TelosArgs, TelosChainSpecParser, TelosNode, TELOS_REVM_EXECUTION_READY, TELOS_RPC_REPLAY_READY,
+};
+use reth_rpc_server_types::DefaultRpcModuleValidator;
 use reth_telos_rpc::TelosClient;
 use std::borrow::Cow;
 use tracing::info;
 
 const MISSING_TELOS_EXECUTION_BACKEND: &str =
-    "Telos execution is disabled: upstream revm 41 lacks the verified Telos fixed_gas_price, \
-revision_number, and first_new_address transaction context; port and validate the Telos revm \
-backend before production launch";
+    "Telos execution is disabled in this release candidate: the revm 41 Telos backend must pass \
+exact-build checkpoint, live-companion, restart/reorg, and finalized-RPC qualification before the \
+production gate is opened";
+
+#[derive(Debug, Subcommand)]
+enum TelosCommands {
+    /// Print the machine-readable qualification gates compiled into this exact binary.
+    #[command(name = "telos-build-info")]
+    BuildInfo,
+}
+
+impl ExtendedCommand for TelosCommands {
+    fn execute(self, _runner: CliRunner) -> eyre::Result<()> {
+        match self {
+            Self::BuildInfo => {
+                println!("{}", serde_json::to_string(&telos_build_info())?);
+                Ok(())
+            }
+        }
+    }
+}
+
+fn telos_build_info() -> serde_json::Value {
+    serde_json::json!({
+        "schema": "telos-reth-build-info/v1",
+        "execution_ready": TELOS_REVM_EXECUTION_READY,
+        "rpc_replay_ready": TELOS_RPC_REPLAY_READY,
+    })
+}
 
 fn telos_version_metadata(upstream: RethCliVersionConsts) -> RethCliVersionConsts {
     let version = env!("CARGO_PKG_VERSION");
@@ -93,11 +133,29 @@ fn main() {
     }
 
     if let Err(err) =
-        Cli::<TelosChainSpecParser, TelosArgs>::parse().run(async move |builder, telos_args| {
+        Cli::<
+            TelosChainSpecParser,
+            TelosArgs,
+            DefaultRpcModuleValidator,
+            TelosCommands,
+        >::parse()
+        .run(async move |mut builder, telos_args| {
             info!(target: "reth::cli", "Launching Telos node");
             telos_args.validate()?;
+            if enforce_telos_rpc_policy(
+                &mut builder.config_mut().rpc,
+                TELOS_REVM_EXECUTION_READY,
+                TELOS_RPC_REPLAY_READY,
+            )? {
+                info!(target: "reth::cli", "regular IPC disabled by the Telos replay-safety gate");
+            }
             let chain_id = builder.config().chain.chain().id();
             validate_execution_backend(chain_id)?;
+            let chain = TelosChainIdentity {
+                chain_id,
+                genesis_hash: builder.config().chain.genesis_hash(),
+            };
+            let execution_anchor = telos_args.load_execution_anchor(chain)?;
 
             let forwarder = if telos_args.forwarder_configured() {
                 Some(TelosClient::new(telos_args.clone().into(), chain_id)?)
@@ -105,21 +163,103 @@ fn main() {
                 None
             };
 
+            let mut builder = builder.node(TelosNode::new(telos_args, execution_anchor));
+            builder
+                .db_mut()
+                .create_and_track_tables_for::<TelosSidecarTables>()
+                .map_err(|error| eyre::eyre!("failed to initialize Telos sidecar tables: {error}"))?;
+
             let handle = builder
-                .node(TelosNode::new(telos_args))
+                .on_component_initialized(move |ctx| {
+                    let sidecar_store = ProviderTelosSidecarStore::new(
+                        ctx.provider.clone(),
+                        execution_anchor.chain,
+                    );
+                    validate_telos_startup(&ctx.provider, &execution_anchor, &sidecar_store)
+                })
                 .extend_rpc_modules(move |ctx| {
+                    let forwarder_enabled = forwarder.is_some();
+                    for method in TELOS_UNSUPPORTED_AUTH_METHODS {
+                        ctx.auth_module.remove_auth_method(method);
+                    }
+                    for method in TELOS_UNSUPPORTED_RPC_METHODS {
+                        ctx.modules.remove_method_from_configured(method);
+                        ctx.auth_module.remove_auth_method(method);
+                    }
+                    info!(
+                        target: "reth::cli",
+                        methods = ?TELOS_UNSUPPORTED_RPC_METHODS,
+                        "removed RPC methods incompatible with canonical Telos headers"
+                    );
+                    if !TELOS_REVM_EXECUTION_READY || !TELOS_RPC_REPLAY_READY {
+                        for method in REPLAY_UNSAFE_RPC_METHODS {
+                            ctx.modules.remove_method_from_configured(method);
+                            ctx.auth_module.remove_auth_method(method);
+                        }
+                        info!(
+                            target: "reth::cli",
+                            methods = ?REPLAY_UNSAFE_RPC_METHODS,
+                            "removed RPC methods blocked by the Telos replay-safety gate"
+                        );
+                    }
+                    let eth_api = ctx.registry.eth_api().clone();
+                    let mut nonce_module = jsonrpsee::RpcModule::new(());
+                    nonce_module.register_async_method(
+                        "eth_getTransactionCount",
+                        move |params, _ctx, _ext| {
+                            let eth_api = eth_api.clone();
+                            async move {
+                                let mut params = params.sequence();
+                                let address: alloy_primitives::Address = params.next()?;
+                                let block: Option<alloy_eips::BlockId> = params.optional_next()?;
+                                validate_telos_transaction_count_block(block)
+                                    .map_err(|error| {
+                                        jsonrpsee::types::ErrorObjectOwned::owned(
+                                            -32000,
+                                            error,
+                                            None::<()>,
+                                        )
+                                    })?;
+                                reth::rpc::eth::EthApiServer::transaction_count(
+                                    &eth_api, address, block,
+                                )
+                                .await
+                            }
+                        },
+                    )?;
+                    ctx.modules
+                        .add_or_replace_if_module_configured(RethRpcModule::Eth, nonce_module)?;
                     if let Some(client) = forwarder {
+                        ctx.auth_module.remove_auth_method("eth_sendRawTransaction");
                         info!(target: "reth::cli", endpoint = client.endpoint(), "installing Telos transaction forwarder");
                         let module = client
                             .build_forwarder_module()
                             .map_err(|error| eyre::eyre!("failed to build Telos forwarder: {error}"))?;
-                        if !ctx.modules.replace_configured(module)? {
+                        if !ctx
+                            .modules
+                            .module_config()
+                            .contains_any(&RethRpcModule::Eth)
+                        {
                             eyre::bail!(
-                                "Telos forwarder methods were not enabled on any configured RPC transport"
+                                "Telos forwarder is configured but the eth namespace is not enabled on any RPC transport"
                             );
                         }
+                        ctx.modules
+                            .add_or_replace_if_module_configured(RethRpcModule::Eth, module)?;
                         info!(target: "reth::cli", "Telos transaction forwarder installed");
+                    } else {
+                        for method in TELOS_FORWARDER_REQUIRED_RPC_METHODS {
+                            ctx.modules.remove_method_from_configured(method);
+                            ctx.auth_module.remove_auth_method(method);
+                        }
+                        info!(
+                            target: "reth::cli",
+                            methods = ?TELOS_FORWARDER_REQUIRED_RPC_METHODS,
+                            "removed RPC methods that require a native Telos forwarder"
+                        );
                     }
+                    enforce_exact_public_rpc_surface(ctx.modules, forwarder_enabled)?;
+                    enforce_exact_auth_rpc_surface(ctx.auth_module.module_mut())?;
                     Ok(())
                 })
                 .launch_with_debug_capabilities()
@@ -144,10 +284,14 @@ mod tests {
     }
 
     #[test]
-    fn telos_chains_are_rejected_by_missing_backend_gate() {
+    fn telos_chain_validation_tracks_release_gate() {
         for chain_id in [40, 41] {
-            let error = validate_execution_backend(chain_id).unwrap_err().to_string();
-            assert_eq!(error, MISSING_TELOS_EXECUTION_BACKEND);
+            let result = validate_execution_backend(chain_id);
+            if TELOS_REVM_EXECUTION_READY {
+                assert!(result.is_ok());
+            } else {
+                assert_eq!(result.unwrap_err().to_string(), MISSING_TELOS_EXECUTION_BACKEND);
+            }
         }
     }
 
@@ -169,5 +313,13 @@ mod tests {
             .p2p_client_version
             .starts_with(&format!("telos-reth/v{}-", env!("CARGO_PKG_VERSION"))));
         assert_eq!(metadata.extra_data, upstream_extra_data);
+    }
+
+    #[test]
+    fn build_info_reports_both_independent_qualification_gates() {
+        let info = telos_build_info();
+        assert_eq!(info["schema"], "telos-reth-build-info/v1");
+        assert_eq!(info["execution_ready"], TELOS_REVM_EXECUTION_READY);
+        assert_eq!(info["rpc_replay_ready"], TELOS_RPC_REPLAY_READY);
     }
 }

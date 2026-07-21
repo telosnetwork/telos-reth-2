@@ -73,7 +73,9 @@ jobs:
       - name: Hash reproducible binary
         run: |
           test -x output/telos-reth
-          sha256sum output/telos-reth | sed 's#  output/telos-reth#  telos-reth#' > checksum.sha256
+          test -x output/telos-checkpoint-bootstrap
+          sha256sum output/telos-checkpoint-bootstrap output/telos-reth \
+            | sed 's#  output/#  #' > checksum.sha256
           cat checksum.sha256
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

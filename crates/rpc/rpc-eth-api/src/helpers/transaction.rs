@@ -8,7 +8,7 @@ use crate::{
     RpcTransaction,
 };
 use alloy_consensus::{
-    transaction::{SignerRecoverable, TransactionMeta, TxHashRef},
+    transaction::{TransactionMeta, TxHashRef},
     BlockHeader, Transaction,
 };
 use alloy_dyn_abi::TypedData;
@@ -18,6 +18,7 @@ use alloy_primitives::{Address, Bytes, TxHash, B256, U256};
 use alloy_rpc_types_eth::{state::EvmOverrides, TransactionInfo};
 use futures::{Future, StreamExt};
 use reth_chain_state::CanonStateSubscriptions;
+use reth_evm::ConfigureEvm;
 use reth_primitives_traits::{
     BlockBody, Recovered, RecoveredBlock, SignedTransaction, TxTy, WithEncoded,
 };
@@ -337,7 +338,10 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
                     return Ok(None);
                 };
 
-                let tx = tx.try_into_recovered_unchecked().map_err(Self::Error::from_eth_err)?;
+                let tx = this
+                    .evm_config()
+                    .recover_block_transaction(tx)
+                    .map_err(Self::Error::from_eth_err)?;
 
                 let receipt = provider.receipt_by_hash(hash).map_err(Self::Error::from_eth_err)?;
 
@@ -719,9 +723,10 @@ pub trait LoadTransaction: SpawnBlocking + FullEthApiTypes + RpcNodeCoreExt {
                 // Note: we assume this transaction is valid, because it's mined (or
                 // part of pending block) and already. We don't need to
                 // check for pre EIP-2 because this transaction could be pre-EIP-2.
-                let transaction = tx
-                    .try_into_recovered_unchecked()
-                    .map_err(|_| EthApiError::InvalidTransactionSignature)?;
+                let transaction = self
+                    .evm_config()
+                    .recover_block_transaction(tx)
+                    .map_err(Self::Error::from_eth_err)?;
 
                 return Ok(Some(TransactionSource::Block {
                     transaction,

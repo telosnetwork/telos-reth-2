@@ -45,7 +45,9 @@ the release issue:
 
 The workflow blocks publication on critical container vulnerabilities. A
 release manager must still review non-critical findings and accepted advisory
-exceptions in `deny.toml`.
+exceptions in `deny.toml`. The built `telos-reth` binary exposes its two independent gates through
+`telos-build-info`; a tag build cannot publish while `execution_ready` is false. The replay gate may
+remain false so unqualified historical replay and diagnostic RPC stay unavailable.
 
 Before creating a tag, dispatch `release.yml` with the current package version. The rehearsal
 performs both native builds, byte-identical rebuild checks, runtime-container assembly and smoke
@@ -74,17 +76,27 @@ and generates SPDX SBOMs plus deterministic archives and checksums. Only after
 reproducibility succeeds and the protected environment is approved does it
 produce GitHub build attestations and sign files with Sigstore keyless signing.
 It verifies the signed archive before putting that exact binary into a
-container, executes and scans each architecture image before pushing it, and
-creates the multi-platform image only from the captured architecture digests.
-It then creates a draft GitHub Release.
+container, executes and scans each architecture image, and initially pushes it
+only under a run-scoped `staging-<commit>-<run>-<attempt>-<arch>` tag. The
+workflow fixes image timestamps to the source commit time, signs and attests the
+captured architecture digests, creates and signs the multi-platform index under
+a run-scoped tag, and creates the complete draft GitHub Release. It seals the
+draft's release ID, notes, and complete asset name/digest/state manifest, then
+rechecks that seal immediately before promotion. Only then does it copy those
+already-signed digests to the semantic architecture and version tags; the
+multi-platform version tag is copied last.
 
-The workflow fails when it observes an existing GitHub Release or versioned
-container tag, including in checks immediately before registry writes. GHCR
-does not provide an atomic create-only tag operation, so these checks are
-defense in depth rather than server-side tag immutability. Exclusive package
-write access is therefore a release prerequisite. After a partial failed
-release, review the failure and remove only the unpublished partial release
-artifacts before rerunning the same tag.
+The publication tail is resumable for the same signed release tag. It refreshes
+assets on the exact existing draft, replaces same-name workflow artifacts on a
+full rerun, and accepts an existing semantic container tag only
+when that tag already resolves to the expected signed digest. Use **Re-run
+failed jobs** after a transient failure; **Re-run all jobs** is also safe and
+uses a new attempt-scoped staging namespace. A different digest, a changed
+draft seal, a published GitHub Release, multiple matching releases, or an
+unreadable registry state fails closed. Run-scoped staging tags are retained as
+an audit trail and are never deployment inputs. Exclusive package write access
+remains a release prerequisite because GHCR does not offer an atomic
+create-only tag operation.
 
 Publishing the draft promotes the corresponding non-prerelease image to
 `ghcr.io/telosnetwork/telos-reth:latest`. Release candidates never update

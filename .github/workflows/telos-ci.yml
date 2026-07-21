@@ -39,7 +39,7 @@ jobs:
   clippy:
     name: clippy and binary smoke test
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: read
     steps:
@@ -55,14 +55,29 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
-      - name: Discover Telos packages
+      - name: Discover production-critical packages
         id: packages
         run: |
           set -euo pipefail
           cargo metadata --locked --no-deps --format-version 1 \
-            | jq -er '[.packages[] | select(.manifest_path | contains("/crates/telos/")) | .name] | unique | if length == 0 then error("no Telos packages found") else join(",") end' \
+            | jq -er '
+                def shared: [
+                  "reth-db-common",
+                  "reth-engine-tree",
+                  "reth-evm",
+                  "reth-rpc-builder",
+                  "reth-rpc-eth-api"
+                ];
+                [.packages[] | select(.manifest_path | contains("/crates/telos/")) | .name]
+                  as $telos
+                | [.packages[].name] as $all
+                | (shared - $all) as $missing
+                | if ($telos | length) == 0 then error("no Telos packages found")
+                  elif ($missing | length) != 0 then error("missing shared packages: \($missing | join(","))")
+                  else ($telos + shared) | unique | join(",")
+                  end' \
             | xargs -I{} echo "names={}" >> "$GITHUB_OUTPUT"
-      - name: Lint Telos packages
+      - name: Lint Telos and modified shared packages
         env:
           PACKAGE_NAMES: ${{ steps.packages.outputs.names }}
         run: |
@@ -80,6 +95,12 @@ jobs:
             | jq -er '[.packages[] | select(.name == "telos-reth") | .version] | if length == 1 then .[0] else error("expected exactly one telos-reth package") end')
           ./target/debug/telos-reth --version | grep -F "$version"
           ./target/debug/telos-reth --help >/dev/null
+          ./target/debug/telos-reth telos-build-info \
+            | jq -e '
+                .schema == "telos-reth-build-info/v1" and
+                (.execution_ready | type == "boolean") and
+                (.rpc_replay_ready | type == "boolean")
+              ' >/dev/null
           mkdir ci-container
           install -m 0755 target/debug/telos-reth ci-container/telos-reth
           strip ci-container/telos-reth
@@ -95,7 +116,7 @@ jobs:
   test:
     name: Telos unit tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: read
     steps:
@@ -113,15 +134,30 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
-      - name: Test every Telos package
+      - name: Test Telos and modified shared packages
         run: |
           set -euo pipefail
           readarray -t packages < <(
             cargo metadata --locked --no-deps --format-version 1 \
-              | jq -er '.packages[] | select(.manifest_path | contains("/crates/telos/")) | .name' \
+              | jq -er '
+                  def shared: [
+                    "reth-db-common",
+                    "reth-engine-tree",
+                    "reth-evm",
+                    "reth-rpc-builder",
+                    "reth-rpc-eth-api"
+                  ];
+                  [.packages[] | select(.manifest_path | contains("/crates/telos/")) | .name]
+                    as $telos
+                  | [.packages[].name] as $all
+                  | (shared - $all) as $missing
+                  | if ($telos | length) == 0 then error("no Telos packages found")
+                    elif ($missing | length) != 0 then error("missing shared packages: \($missing | join(","))")
+                    else ($telos + shared) | unique[]
+                    end' \
               | sort -u
           )
-          ((${#packages[@]} > 0)) || { echo "no Telos packages found" >&2; exit 1; }
+          ((${#packages[@]} >= 6)) || { echo "package discovery is incomplete" >&2; exit 1; }
           cargo_args=()
           for package in "${packages[@]}"; do
             cargo_args+=(--package "$package")
@@ -185,10 +221,114 @@ jobs:
             --security-opt no-new-privileges \
             telos-reth:ci --help >/dev/null
 
+  operations-assets:
+    name: operations assets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Check scripts and deterministic release contents
+        run: |
+          set -euo pipefail
+          bash -n \
+            ops/scripts/* \
+            ops/tests/*.sh \
+            scripts/release/*.sh \
+            scripts/telos/checkpoint/*.sh \
+            scripts/telos/checkpoint/legacy-extractor/build-exact-legacy-extractor.sh
+          python3 ops/tests/test_restore_transaction.py
+          bash ops/tests/test_snapshot_data_verification.sh
+          python3 - <<'PY'
+          from hashlib import sha256
+          from pathlib import Path
+
+          for path in Path("scripts/telos/checkpoint").glob("*.py"):
+              compile(path.read_text(encoding="utf-8"), str(path), "exec")
+          for root in (Path("ops/scripts"), Path("scripts/telos/checkpoint")):
+              for path in root.iterdir():
+                  if not path.is_file():
+                      continue
+                  lines = path.read_text(encoding="utf-8").splitlines()
+                  start = None
+                  for number, line in enumerate(lines, 1):
+                      if start is None and "<<'PY'" in line:
+                          start = number + 1
+                      elif start is not None and line == "PY":
+                          compile("\n".join(lines[start - 1:number - 1]) + "\n", f"{path}:{start}", "exec")
+                          start = None
+                  if start is not None:
+                      raise SystemExit(f"unterminated Python heredoc in {path}:{start - 1}")
+
+          checkpoint_root = Path("ops/checkpoints/telos-mainnet/479294328")
+          local_checkpoint_files = (
+              "checkpoint.json",
+              "legacy-extractor.provenance.json",
+              "mdbx-check.log",
+              "mdbx-copy.json",
+              "native-anchor.attestation.json",
+              "state.legacy-evidence.json",
+          )
+          checksum_lines = (checkpoint_root / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
+          for name in local_checkpoint_files:
+              matches = [line for line in checksum_lines if line.endswith(f"  {name}")]
+              if len(matches) != 1:
+                  raise SystemExit(f"expected one local SHA256SUMS entry for {name}, got {len(matches)}")
+              expected, recorded_name = matches[0].split("  ", 1)
+              if recorded_name != name or len(expected) != 64:
+                  raise SystemExit(f"malformed local SHA256SUMS entry for {name}")
+              actual = sha256((checkpoint_root / name).read_bytes()).hexdigest()
+              if actual != expected:
+                  raise SystemExit(f"local checkpoint digest mismatch for {name}")
+          PY
+          find ops/scripts scripts/release scripts/telos/checkpoint -maxdepth 1 -type f \
+            ! -perm /111 -print -quit | grep -q . && {
+              echo "an operational/release script is not executable" >&2
+              exit 1
+            }
+          test -x scripts/telos/checkpoint/legacy-extractor/build-exact-legacy-extractor.sh
+          test -f scripts/telos/checkpoint/legacy-extractor/src/main.rs
+          test ! -L scripts/telos/checkpoint/legacy-extractor/src/main.rs
+          sudo install -d -m 0755 /usr/local/libexec
+          sudo install -m 0755 ops/scripts/* /usr/local/libexec/
+          sudo install -m 0755 /bin/true /usr/local/bin/telos-reth
+          sudo install -m 0755 /bin/true /usr/local/bin/telos-consensus-client
+          systemd-sysusers --dry-run ops/sysusers.d/telos-reth.conf
+          sudo systemd-sysusers ops/sysusers.d/telos-reth.conf
+          systemd-analyze verify ops/systemd/*.service ops/systemd/*.timer
+          sudo env TELOS_RESTORE_INTEGRATION_DISPOSABLE_CI=1 \
+            bash ops/tests/test_restore_integration.sh
+
+          mkdir -p package-input package-a package-b
+          install -m 0755 /bin/true package-input/telos-reth
+          install -m 0755 /bin/true package-input/telos-checkpoint-bootstrap
+          export SOURCE_DATE_EPOCH=1700000000
+          package_args=(
+            package-input/telos-reth 0.1.0 x86_64-unknown-linux-gnu
+            0123456789abcdef0123456789abcdef01234567 v2.4.1
+            89abcdef0123456789abcdef0123456789abcdef
+          )
+          scripts/release/package-telos.sh "${package_args[@]}" package-a
+          scripts/release/package-telos.sh "${package_args[@]}" package-b
+          archive=telos-reth-0.1.0-x86_64-unknown-linux-gnu.tar.gz
+          cmp "package-a/${archive}" "package-b/${archive}"
+          tar -tzf "package-a/${archive}" \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/telos-checkpoint-bootstrap \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/scripts/telos/checkpoint/legacy-extractor/build-exact-legacy-extractor.sh \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/scripts/telos/checkpoint/legacy-extractor/src/main.rs \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/ops/scripts/telos-reth-restore \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/ops/checkpoints/telos-mainnet/479294328/checkpoint.json \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/docs/telos/checkpoint-bootstrap.md \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/docs/telos/compatibility.md \
+            >/dev/null
+
   ci-success:
     name: telos / ci success
     if: always()
-    needs: [format, clippy, test, container-definition]
+    needs: [format, clippy, test, container-definition, operations-assets]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
@@ -199,8 +339,10 @@ jobs:
           CLIPPY_RESULT: ${{ needs.clippy.result }}
           TEST_RESULT: ${{ needs.test.result }}
           CONTAINER_RESULT: ${{ needs.container-definition.result }}
+          OPERATIONS_RESULT: ${{ needs.operations-assets.result }}
         run: |
           test "$FORMAT_RESULT" = success
           test "$CLIPPY_RESULT" = success
           test "$TEST_RESULT" = success
           test "$CONTAINER_RESULT" = success
+          test "$OPERATIONS_RESULT" = success

@@ -12,6 +12,10 @@ Group=root
 UMask=0077
 EnvironmentFile=/etc/telos-reth/%i/node.env
 Environment=RESTIC_CACHE_DIR=/var/cache/telos-reth-backup/%i
+StateDirectory=telos-reth-backup/%i
+StateDirectoryMode=0700
+CacheDirectory=telos-reth-backup/%i
+CacheDirectoryMode=0700
 LoadCredential=restic.repository:/etc/telos-reth/%i/restic.repository
 LoadCredential=restic.password:/etc/telos-reth/%i/restic.password
 ExecStart=/usr/local/libexec/telos-reth-snapshot %i %d/restic.repository %d/restic.password
@@ -40,8 +44,8 @@ RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 RemoveIPC=yes
-ReadOnlyPaths=/etc/telos-reth
-ReadWritePaths=/var/lib/telos-reth/%i /var/lib/telos-consensus/%i /var/lib/telos-reth-snapshots /var/lib/telos-reth-backup /var/lib/telos-reth-health /var/cache/telos-reth-backup
+ReadOnlyPaths=/etc/telos-reth /var/lib/telos-reth/%i /var/lib/telos-consensus/%i
+ReadWritePaths=/var/lib/telos-reth-snapshots /var/lib/telos-reth-backup /var/lib/telos-reth-health/metrics /var/cache/telos-reth-backup
 
 [Install]
 WantedBy=multi-user.target

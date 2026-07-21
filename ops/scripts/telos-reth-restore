@@ -8,122 +8,642 @@ die() {
 }
 
 [[ $EUID -eq 0 ]] || die "must run as root"
-[[ $# -eq 3 && $3 == --confirm ]] ||
-    die "usage: $0 INSTANCE SNAPSHOT_DIRECTORY --confirm"
-instance=$1
-requested_snapshot=$2
+mode=
+requested_snapshot=
+if [[ $# -eq 3 && $3 == --confirm ]]; then
+    mode=restore
+    instance=$1
+    requested_snapshot=$2
+elif [[ $# -eq 2 && $2 == --recover ]]; then
+    mode=recover
+    instance=$1
+else
+    die "usage: $0 INSTANCE SNAPSHOT_DIRECTORY --confirm | INSTANCE --recover"
+fi
 [[ $instance =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || die "invalid instance name"
 
 node_config=/etc/telos-reth/${instance}/node.env
 backup_config=/etc/telos-reth/${instance}/backup.env
-[[ -f $node_config && -f $backup_config ]] || die "node.env and backup.env are required"
+[[ -f $node_config && -f $backup_config && ! -L $node_config && ! -L $backup_config ]] ||
+    die "regular non-symlink node.env and backup.env files are required"
+[[ $(realpath -e "$node_config") == "$node_config" &&
+   $(realpath -e "$backup_config") == "$backup_config" ]] ||
+    die "configuration files must use canonical paths"
+[[ $(stat -c '%U:%G %a' "$(dirname "$node_config")") == 'root:telos-reth-config 750' ]] ||
+    die "the instance configuration directory must be root:telos-reth-config mode 0750"
+[[ $(stat -c '%U:%G %a' "$node_config") == 'root:telos-reth-config 440' ]] ||
+    die "node.env must be root:telos-reth-config mode 0440"
+[[ $(stat -c '%U:%G %a' "$backup_config") == 'root:root 600' ]] ||
+    die "backup.env must be root:root mode 0600"
+grep -Eq '^[[:space:]]*(export[[:space:]]+)?CONSENSUS_UNIT=' "$backup_config" &&
+    die "backup.env must not define CONSENSUS_UNIT"
 # shellcheck disable=SC1090
 source "$node_config"
+node_consensus_unit=${CONSENSUS_UNIT:-}
 # shellcheck disable=SC1090
 source "$backup_config"
+[[ -n $node_consensus_unit && ${CONSENSUS_UNIT:-} == "$node_consensus_unit" ]] ||
+    die "CONSENSUS_UNIT must be defined only by node.env"
 
-for name in CONSENSUS_DATA_DIR CONSENSUS_UNIT CONSENSUS_BINARY CONSENSUS_VERSION \
-    CONSENSUS_SHA256 SNAPSHOT_ROOT RESTORE_HEALTH_TIMEOUT_SECONDS CHAIN_ID BINARY_SHA256; do
+required=(CONSENSUS_DATA_DIR CONSENSUS_UNIT CONSENSUS_BINARY CONSENSUS_CONFIG CONSENSUS_VERSION
+    CONSENSUS_SHA256 SNAPSHOT_ROOT RESTORE_HEALTH_TIMEOUT_SECONDS CHAIN_ID AUTHRPC_PORT NODEOS_URL
+    BINARY_SHA256 CHECKPOINT_MANIFEST CHECKPOINT_MANIFEST_SHA256 CHECKPOINT_AUDIT EXECUTION_ANCHOR
+    EXECUTION_ANCHOR_BLOCK_NUMBER EXECUTION_ANCHOR_BLOCK_HASH)
+for name in "${required[@]}"; do
     [[ -n ${!name:-} ]] || die "$name is required"
     [[ ${!name} != *REPLACE_* ]] || die "$name still contains a placeholder"
 done
-[[ $RESTORE_HEALTH_TIMEOUT_SECONDS =~ ^[1-9][0-9]*$ ]] || die "RESTORE_HEALTH_TIMEOUT_SECONDS must be positive"
+[[ $RESTORE_HEALTH_TIMEOUT_SECONDS =~ ^[1-9][0-9]*$ ]] ||
+    die "RESTORE_HEALTH_TIMEOUT_SECONDS must be positive"
+[[ $CHECKPOINT_MANIFEST_SHA256 =~ ^[[:xdigit:]]{64}$ ]] ||
+    die "CHECKPOINT_MANIFEST_SHA256 must be 64 hexadecimal characters"
+[[ $CONSENSUS_UNIT == "telos-consensus-client@${instance}.service" ]] ||
+    die "CONSENSUS_UNIT must identify the managed companion instance"
 
 execution_dir=/var/lib/telos-reth/${instance}
 [[ $CONSENSUS_DATA_DIR == "/var/lib/telos-consensus/${instance}" ]] ||
     die "CONSENSUS_DATA_DIR must match /var/lib/telos-consensus/${instance}"
 execution_unit=telos-reth@${instance}.service
 health_unit=telos-reth-readiness@${instance}.service
+health_timer=telos-reth-readiness@${instance}.timer
 state_dir=/var/lib/telos-reth-backup/${instance}
-lock_file=/run/lock/telos-reth-snapshot-${instance}.lock
-snapshot_parent=$(realpath -m "${SNAPSHOT_ROOT}/${instance}")
-snapshot=$(realpath -e "$requested_snapshot")
-[[ -d $snapshot && ! -L $requested_snapshot ]] || die "snapshot must be a real directory"
-[[ $(dirname "$snapshot") == "$snapshot_parent" ]] || die "snapshot is outside $snapshot_parent"
-snapshot_name=$(basename "$snapshot")
-[[ $snapshot_name =~ ^20[0-9]{6}T[0-9]{6}Z-[[:xdigit:]]{12}$ ]] || die "snapshot name is invalid"
+lock_file=${state_dir}/operation.lock
+transaction_journal=${state_dir}/restore.transaction.json
+permit_dir=/run/telos-reth-restore
+restore_permit=${permit_dir}/${instance}.permit
+if [[ $mode == restore ]]; then
+    [[ -d $SNAPSHOT_ROOT && ! -L $SNAPSHOT_ROOT && $(realpath -e "$SNAPSHOT_ROOT") == "$SNAPSHOT_ROOT" ]] ||
+        die "SNAPSHOT_ROOT must be a canonical real directory"
+    snapshot_parent=${SNAPSHOT_ROOT}/${instance}
+    [[ -d $snapshot_parent && ! -L $snapshot_parent &&
+       $(realpath -e "$snapshot_parent") == "$snapshot_parent" ]] ||
+        die "instance snapshot root must be a canonical real directory"
+fi
 case "$execution_dir" in /|/var|/var/lib|/home|/root) die "unsafe execution path" ;; esac
 case "$CONSENSUS_DATA_DIR" in /|/var|/var/lib|/home|/root) die "unsafe consensus path" ;; esac
-[[ -d $execution_dir && ! -L $execution_dir ]] || die "current execution data directory is invalid"
-[[ -d $CONSENSUS_DATA_DIR && ! -L $CONSENSUS_DATA_DIR ]] || die "current consensus data directory is invalid"
-mkdir -p "$state_dir"
+for artifact in "$CHECKPOINT_MANIFEST" "$CHECKPOINT_AUDIT" "$EXECUTION_ANCHOR"; do
+    [[ $artifact == /* && $artifact != *[[:space:]]* ]] ||
+        die "checkpoint target paths must be absolute and contain no whitespace"
+done
+[[ $CHECKPOINT_AUDIT == "${CHECKPOINT_MANIFEST%.*}.audit.json" &&
+   $EXECUTION_ANCHOR == "${CHECKPOINT_MANIFEST%.*}.anchor.json" ]] ||
+    die "checkpoint audit and anchor must be deterministic manifest siblings"
+[[ $CHECKPOINT_MANIFEST == "/etc/telos-reth/${instance}/checkpoint.json" ]] ||
+    die "CHECKPOINT_MANIFEST must use the managed instance path"
 
+install -d -o root -g root -m 0700 "$state_dir"
+[[ -d $state_dir && ! -L $state_dir && $(realpath -e "$state_dir") == "$state_dir" ]] ||
+    die "backup state directory is unsafe"
+[[ ! -L $lock_file ]] || die "backup operation lock must not be a symlink"
 exec 9>"$lock_file"
 flock -n 9 || die "another snapshot or restore is running"
 
-[[ -f $snapshot/manifest.json && -f $snapshot/SHA256SUMS ]] || die "snapshot metadata is incomplete"
-[[ -d $snapshot/execution && -d $snapshot/consensus ]] || die "snapshot data is incomplete"
-if find "$snapshot/execution" "$snapshot/consensus" -xdev -type l -print -quit | grep -q .; then
-    die "snapshot contains a symlink"
+if [[ $mode == restore ]]; then
+    snapshot=$(realpath -e "$requested_snapshot") || die "snapshot does not exist"
+    [[ -d $snapshot && ! -L $requested_snapshot ]] || die "snapshot must be a real directory"
+    [[ $(dirname "$snapshot") == "$snapshot_parent" ]] || die "snapshot is outside $snapshot_parent"
+    snapshot_name=$(basename "$snapshot")
+    [[ $snapshot_name =~ ^20[0-9]{6}T[0-9]{6}Z-[[:xdigit:]]{12}$ ]] ||
+        die "snapshot name is invalid"
 fi
-# sha256sum accepts arbitrary paths. Restrict the manifest before asking it to read anything so a
-# recovered repository cannot make the verifier traverse outside the selected recovery point.
+
+temporary_files=()
+cleanup_temporary_files() {
+    local path
+    for path in "${temporary_files[@]}"; do
+        rm -f "$path"
+    done
+}
+
+cleanup_only() {
+    local rc=$?
+    trap - EXIT
+    cleanup_temporary_files
+    exit "$rc"
+}
+trap cleanup_only EXIT
+
+unit_is_stopped() {
+    local unit=$1 main_pid control_pid
+    main_pid=$(systemctl show "$unit" --property=MainPID --value)
+    control_pid=$(systemctl show "$unit" --property=ControlPID --value)
+    case "$(systemctl show "$unit" --property=ActiveState --value)" in
+        inactive|failed)
+            [[ $main_pid == 0 && $control_pid == 0 ]]
+            return
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+unit_is_inactive() {
+    case "$(systemctl show "$1" --property=ActiveState --value)" in
+        inactive|failed) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+stop_and_confirm_units() {
+    local failed_stop=0
+    systemctl stop "$health_timer" || failed_stop=1
+    systemctl stop "$health_unit" || failed_stop=1
+    systemctl stop "$CONSENSUS_UNIT" || failed_stop=1
+    systemctl stop "$execution_unit" || failed_stop=1
+    unit_is_inactive "$health_timer" || failed_stop=1
+    unit_is_stopped "$health_unit" || failed_stop=1
+    unit_is_stopped "$CONSENSUS_UNIT" || failed_stop=1
+    unit_is_stopped "$execution_unit" || failed_stop=1
+    (( failed_stop == 0 ))
+}
+
+configure_transaction_paths() {
+    local transaction_id=$1
+    targets=("$execution_dir" "$CONSENSUS_DATA_DIR" "$CHECKPOINT_MANIFEST" "$CHECKPOINT_AUDIT" "$EXECUTION_ANCHOR")
+    staged=("${execution_dir}.restore-${transaction_id}.partial"
+        "${CONSENSUS_DATA_DIR}.restore-${transaction_id}.partial"
+        "${CHECKPOINT_MANIFEST}.restore-${transaction_id}.partial"
+        "${CHECKPOINT_AUDIT}.restore-${transaction_id}.partial"
+        "${EXECUTION_ANCHOR}.restore-${transaction_id}.partial")
+    old=("${execution_dir}.pre-restore-${transaction_id}"
+        "${CONSENSUS_DATA_DIR}.pre-restore-${transaction_id}"
+        "${CHECKPOINT_MANIFEST}.pre-restore-${transaction_id}"
+        "${CHECKPOINT_AUDIT}.pre-restore-${transaction_id}"
+        "${EXECUTION_ANCHOR}.pre-restore-${transaction_id}")
+    failed=("${execution_dir}.failed-restore-${transaction_id}"
+        "${CONSENSUS_DATA_DIR}.failed-restore-${transaction_id}"
+        "${CHECKPOINT_MANIFEST}.failed-restore-${transaction_id}"
+        "${CHECKPOINT_AUDIT}.failed-restore-${transaction_id}"
+        "${EXECUTION_ANCHOR}.failed-restore-${transaction_id}")
+}
+
+load_transaction_journal() {
+    local fields
+    [[ -f $transaction_journal && ! -L $transaction_journal ]] ||
+        die "restore transaction journal must be a regular non-symlink file"
+    [[ $(realpath -e "$transaction_journal") == "$transaction_journal" &&
+       $(stat -c '%U:%G %a' "$transaction_journal") == 'root:root 600' ]] ||
+        die "restore transaction journal must be canonical root:root mode 0600"
+    fields=$(jq -er --arg instance "$instance" '
+        select(.schema == "telos-reth-restore-transaction/v1" and .instance == $instance) |
+        [.status, .restore_id, .had_original, .execution_was_active,
+         .consensus_was_active, .health_timer_was_active, .owner_pid,
+         .owner_start_ticks, .permit_nonce] | @tsv' "$transaction_journal") ||
+        die "restore transaction journal is malformed or belongs to another instance"
+    IFS=$'\t' read -r journal_status journal_restore_id journal_had_original \
+        journal_execution_was_active journal_consensus_was_active \
+        journal_health_timer_was_active journal_owner_pid journal_owner_start_ticks \
+        journal_permit_nonce <<< "$fields"
+    [[ $journal_status == pending || $journal_status == committed || $journal_status == rolled_back ]] ||
+        die "restore transaction journal has an invalid status"
+    [[ $journal_restore_id =~ ^20[0-9]{6}T[0-9]{6}Z-[1-9][0-9]*$ ]] ||
+        die "restore transaction journal has an invalid restore ID"
+    [[ $journal_had_original =~ ^[01]{5}$ ]] ||
+        die "restore transaction journal has an invalid original-object bitmap"
+    [[ $journal_execution_was_active =~ ^[01]$ &&
+       $journal_consensus_was_active =~ ^[01]$ &&
+       $journal_health_timer_was_active =~ ^[01]$ ]] ||
+        die "restore transaction journal has invalid service state"
+    [[ $journal_owner_pid =~ ^[1-9][0-9]*$ && $journal_owner_start_ticks =~ ^[1-9][0-9]*$ &&
+       $journal_permit_nonce =~ ^[0-9a-f]{32}$ ]] ||
+        die "restore transaction journal has invalid owner identity"
+}
+
+persist_transaction_status() {
+    local status=$1 journal_tmp
+    [[ $status == committed || $status == rolled_back ]] || return 1
+    journal_tmp=$(mktemp "$state_dir/.restore.transaction.XXXXXX") || return 1
+    temporary_files+=("$journal_tmp")
+    jq --arg status "$status" --arg updated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '.status = $status | .updated_at = $updated_at' "$transaction_journal" > "$journal_tmp" || return 1
+    chown root:root "$journal_tmp" || return 1
+    chmod 0600 "$journal_tmp" || return 1
+    sync -f "$journal_tmp" || return 1
+    mv -f "$journal_tmp" "$transaction_journal" || return 1
+    sync -f "$state_dir" || return 1
+}
+
+remove_restore_permit() {
+    if [[ -e $restore_permit || -L $restore_permit ]]; then
+        rm -f -- "$restore_permit" || return 1
+    fi
+    if [[ -d $permit_dir && ! -L $permit_dir ]]; then
+        sync -f "$permit_dir" || return 1
+    fi
+}
+
+assert_recovery_paths_safe() {
+    local index candidate
+    for ((index = 0; index < ${#targets[@]}; index++)); do
+        for candidate in "${targets[index]}" "${staged[index]}" "${old[index]}" "${failed[index]}"; do
+            [[ ! -L $candidate ]] || die "refusing recovery through symlink: $candidate"
+            [[ ! -e $candidate || $index -ge 2 || -d $candidate ]] ||
+                die "recovery database object is not a directory: $candidate"
+            [[ ! -e $candidate || $index -lt 2 || -f $candidate ]] ||
+                die "recovery checkpoint object is not a regular file: $candidate"
+            if [[ -d $candidate ]] && mountpoint -q "$candidate"; then
+                die "recovery object must not be a mount point: $candidate"
+            fi
+        done
+    done
+}
+
+sync_object_parent() {
+    sync -f "$(dirname "$1")"
+}
+
+recover_original_object_set() {
+    local index had target_path staged_path old_path failed_path
+    assert_recovery_paths_safe
+    for ((index = ${#targets[@]} - 1; index >= 0; index--)); do
+        had=${journal_had_original:index:1}
+        target_path=${targets[index]}
+        staged_path=${staged[index]}
+        old_path=${old[index]}
+        failed_path=${failed[index]}
+        if [[ $had == 1 ]]; then
+            if [[ -e $old_path ]]; then
+                if [[ -e $target_path ]]; then
+                    [[ ! -e $failed_path ]] || {
+                        echo "CRITICAL: both live and failed objects exist while the original is staged: $target_path" >&2
+                        return 1
+                    }
+                    mv "$target_path" "$failed_path" || return 1
+                    sync_object_parent "$target_path" || return 1
+                fi
+                [[ ! -e $target_path ]] || return 1
+                mv "$old_path" "$target_path" || return 1
+                sync_object_parent "$target_path" || return 1
+            elif [[ ! -e $target_path ]]; then
+                echo "CRITICAL: original restore object is missing: $target_path" >&2
+                return 1
+            fi
+        else
+            if [[ -e $old_path ]]; then
+                echo "CRITICAL: an original object exists for a target recorded as absent: $old_path" >&2
+                return 1
+            fi
+            if [[ -e $target_path ]]; then
+                [[ ! -e $failed_path ]] || {
+                    echo "CRITICAL: ambiguous clean-host restore state at $target_path" >&2
+                    return 1
+                }
+                # StateDirectory may recreate an originally absent database directory before the
+                # pending-journal preflight rejects a boot-time start. Only an empty directory can
+                # coexist safely with the still-staged database; checkpoint files never get this
+                # exception.
+                if [[ -e $staged_path ]] &&
+                   { (( index >= 2 )) || [[ -n $(find "$target_path" -mindepth 1 -print -quit) ]]; }; then
+                    echo "CRITICAL: ambiguous clean-host restore state at $target_path" >&2
+                    return 1
+                fi
+                mv "$target_path" "$failed_path" || return 1
+                sync_object_parent "$target_path" || return 1
+            fi
+        fi
+    done
+    for ((index = 0; index < ${#targets[@]}; index++)); do
+        had=${journal_had_original:index:1}
+        if [[ $had == 1 ]]; then
+            [[ -e ${targets[index]} && ! -e ${old[index]} ]] || return 1
+        else
+            [[ ! -e ${targets[index]} && ! -e ${old[index]} ]] || return 1
+        fi
+    done
+}
+
+restart_recorded_units() {
+    local restart_failed=0
+    if [[ $journal_execution_was_active == 1 ]]; then
+        systemctl start "$execution_unit" || restart_failed=1
+    fi
+    if [[ $journal_consensus_was_active == 1 ]]; then
+        systemctl start "$CONSENSUS_UNIT" || restart_failed=1
+    fi
+    if [[ $journal_health_timer_was_active == 1 ]]; then
+        systemctl start "$health_timer" || restart_failed=1
+    fi
+    (( restart_failed == 0 ))
+}
+
+recover_pending_transaction() {
+    load_transaction_journal
+    [[ $journal_status == pending ]] || die "no pending restore transaction requires recovery"
+    configure_transaction_paths "$journal_restore_id"
+    echo "Recovering pending restore transaction $journal_restore_id to its complete pre-restore set" >&2
+    stop_and_confirm_units || die "all services could not be proven inactive; recovery made no rename"
+    recover_original_object_set ||
+        die "recovery is incomplete; the pending journal remains and startup stays fenced"
+    persist_transaction_status rolled_back ||
+        die "the original set is restored but its terminal journal status could not be made durable"
+    remove_restore_permit || die "the original set is restored but its runtime permit could not be removed"
+    restart_recorded_units ||
+        die "the original object set is durable but one or more previously active units did not restart"
+    echo "Recovery completed; preserved partial and failed objects with suffix $journal_restore_id" >&2
+}
+
+if [[ -e $transaction_journal || -L $transaction_journal ]]; then
+    load_transaction_journal
+    if [[ $journal_status == pending && $mode == restore ]]; then
+        die "pending restore transaction $journal_restore_id must be recovered with: $0 $instance --recover"
+    fi
+elif [[ $mode == recover ]]; then
+    die "no restore transaction journal exists"
+fi
+
+if [[ $mode == recover ]]; then
+    recover_pending_transaction
+    exit 0
+fi
+
+assert_plain_tree() {
+    local root=$1 path unsafe
+    unsafe=$(find "$root" -xdev ! \( -type d -o -type f \) -print -quit)
+    [[ -z $unsafe ]] || die "snapshot contains a symlink or special file: $unsafe"
+    while IFS= read -r -d '' path; do
+        [[ $path != *$'\n'* && $path != *$'\r'* && $path != *'\\'* ]] ||
+            die "snapshot path contains a character unsupported by the checksum inventory"
+        if [[ -d $path && $path != "$root" ]] && mountpoint -q "$path"; then
+            die "nested mount makes the snapshot inventory ambiguous: $path"
+        fi
+    done < <(find "$root" -xdev -print0)
+}
+
+assert_plain_tree "$snapshot"
+while IFS= read -r -d '' entry; do
+    case "$(basename "$entry")" in
+        execution|consensus|checkpoint)
+            [[ -d $entry ]] || die "$entry must be a directory"
+            ;;
+        manifest.json|SHA256SUMS|remote.snapshot-id)
+            [[ -f $entry ]] || die "$entry must be a regular file"
+            ;;
+        *) die "unexpected top-level snapshot entry: $entry" ;;
+    esac
+done < <(find "$snapshot" -mindepth 1 -maxdepth 1 -print0)
+[[ -f $snapshot/manifest.json && -f $snapshot/SHA256SUMS ]] ||
+    die "snapshot metadata is incomplete"
+[[ -d $snapshot/execution && -d $snapshot/consensus && -d $snapshot/checkpoint ]] ||
+    die "snapshot data is incomplete"
+for artifact in checkpoint.json checkpoint.audit.json checkpoint.anchor.json; do
+    [[ -f $snapshot/checkpoint/$artifact ]] ||
+        die "snapshot checkpoint artifact is missing: $artifact"
+done
+
+expected_inventory=$(mktemp "$state_dir/inventory.expected.XXXXXX")
+actual_inventory=$(mktemp "$state_dir/inventory.actual.XXXXXX")
+temporary_files+=("$expected_inventory" "$actual_inventory")
 while IFS= read -r checksum_line; do
+    [[ $checksum_line != \\* ]] || die "escaped checksum entries are not supported"
     checksum_digest=${checksum_line:0:64}
     checksum_separator=${checksum_line:64:2}
     checksum_path=${checksum_line:66}
-    [[ $checksum_digest =~ ^[[:xdigit:]]{64}$ && $checksum_separator == '  ' ]] ||
+    [[ $checksum_digest =~ ^[0-9a-f]{64}$ && $checksum_separator == '  ' ]] ||
         die "snapshot checksum manifest has invalid syntax"
-    [[ $checksum_path == manifest.json || $checksum_path == execution/* || $checksum_path == consensus/* ]] ||
+    [[ $checksum_path == manifest.json || $checksum_path == execution/* ||
+       $checksum_path == consensus/* || $checksum_path == checkpoint/* ]] ||
         die "snapshot checksum path is outside the recovery point"
     [[ /$checksum_path/ != */../* && /$checksum_path/ != */./* && $checksum_path != /* ]] ||
         die "snapshot checksum path contains traversal"
+    printf '%s\n' "$checksum_path" >> "$expected_inventory"
 done < "$snapshot/SHA256SUMS"
-jq -e --arg instance "$instance" --arg chain_id "$CHAIN_ID" \
-    '.schema == "telos-reth-snapshot/v1" and .instance == $instance and .chain_id == $chain_id and
-     (.binary.sha256 | type == "string") and (.consensus_companion.sha256 | type == "string")' \
-    "$snapshot/manifest.json" >/dev/null || die "snapshot manifest is incompatible"
+[[ -s $expected_inventory ]] || die "snapshot checksum inventory is empty"
+if [[ -n $(LC_ALL=C sort "$expected_inventory" | uniq -d) ]]; then
+    die "snapshot checksum inventory contains duplicate paths"
+fi
+(
+    cd "$snapshot"
+    printf '%s\n' manifest.json
+    find execution consensus checkpoint -xdev -type f -print
+) | LC_ALL=C sort > "$actual_inventory"
+LC_ALL=C sort -o "$expected_inventory" "$expected_inventory"
+cmp -s "$expected_inventory" "$actual_inventory" ||
+    die "snapshot checksum inventory does not exactly cover every recovery file"
 (
     cd "$snapshot"
     sha256sum --check --strict SHA256SUMS
 ) >/dev/null || die "snapshot checksum verification failed"
 
-# A database snapshot is only compatible with the exact execution/companion release pair that
-# created it. Switch the atomic release symlinks first when restoring an older release.
+jq -e --arg instance "$instance" --argjson chain_id "$CHAIN_ID" \
+    '.schema == "telos-reth-snapshot/v2" and .instance == $instance and .chain_id == $chain_id and
+     .data_layout.execution == {owner:"telos-reth",group:"telos-reth"} and
+     .data_layout.consensus == {owner:"telos-consensus",group:"telos-consensus"} and
+     (.binary.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+     (.consensus_companion.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+     (.consensus_companion.config_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+     (.checkpoint.manifest_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+     (.checkpoint.audit_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+     (.checkpoint.execution_anchor_sha256 | type == "string" and test("^[0-9a-f]{64}$"))' \
+    "$snapshot/manifest.json" >/dev/null || die "snapshot manifest is incompatible"
+
+# A recovery point is compatible only with the exact execution, companion, and checkpoint pins.
+# On a bare-metal host install these release links and node.env first; the data and checkpoint files
+# themselves may be absent and are restored below.
 expected_execution_digest=$(jq -r '.binary.sha256' "$snapshot/manifest.json")
 expected_consensus_digest=$(jq -r '.consensus_companion.sha256' "$snapshot/manifest.json")
 expected_consensus_version=$(jq -r '.consensus_companion.version' "$snapshot/manifest.json")
+expected_consensus_config_digest=$(jq -r '.consensus_companion.config_sha256' "$snapshot/manifest.json")
+expected_checkpoint_manifest_digest=$(jq -r '.checkpoint.manifest_sha256' "$snapshot/manifest.json")
+expected_checkpoint_audit_digest=$(jq -r '.checkpoint.audit_sha256' "$snapshot/manifest.json")
+expected_execution_anchor_digest=$(jq -r '.checkpoint.execution_anchor_sha256' "$snapshot/manifest.json")
 [[ ${snapshot_name##*-} == ${expected_execution_digest:0:12} ]] ||
     die "snapshot directory suffix does not match its execution digest"
+[[ ${expected_checkpoint_manifest_digest,,} == ${CHECKPOINT_MANIFEST_SHA256,,} ]] ||
+    die "snapshot checkpoint manifest does not match the deployment pin"
+
 execution_binary=$(readlink -f /usr/local/bin/telos-reth)
 consensus_binary=$(readlink -f "$CONSENSUS_BINARY")
+[[ -x $execution_binary && -f $execution_binary ]] || die "execution release is not installed"
+[[ -x $consensus_binary && -f $consensus_binary ]] || die "consensus release is not installed"
 actual_execution_digest=$(sha256sum "$execution_binary" | awk '{print $1}')
 actual_consensus_digest=$(sha256sum "$consensus_binary" | awk '{print $1}')
 actual_consensus_version=$($consensus_binary --version | head -n 1)
-[[ ${actual_execution_digest,,} == ${expected_execution_digest,,} ]] ||
-    die "active execution binary does not match the snapshot"
-[[ ${actual_execution_digest,,} == ${BINARY_SHA256,,} ]] || die "active execution binary is not deployment-pinned"
-[[ ${actual_consensus_digest,,} == ${expected_consensus_digest,,} ]] ||
-    die "active consensus binary does not match the snapshot"
-[[ ${actual_consensus_digest,,} == ${CONSENSUS_SHA256,,} ]] || die "active consensus binary is not deployment-pinned"
-[[ $actual_consensus_version == "$expected_consensus_version" && $actual_consensus_version == "$CONSENSUS_VERSION" ]] ||
+[[ ${actual_execution_digest,,} == ${expected_execution_digest,,} &&
+   ${actual_execution_digest,,} == ${BINARY_SHA256,,} ]] ||
+    die "active execution release does not match the snapshot and deployment pin"
+[[ ${actual_consensus_digest,,} == ${expected_consensus_digest,,} &&
+   ${actual_consensus_digest,,} == ${CONSENSUS_SHA256,,} ]] ||
+    die "active consensus release does not match the snapshot and deployment pin"
+[[ $actual_consensus_version == "$expected_consensus_version" &&
+   $actual_consensus_version == "$CONSENSUS_VERSION" ]] ||
     die "active consensus version does not match the snapshot and deployment pin"
+actual_consensus_config_digest=$(sha256sum "$CONSENSUS_CONFIG" | awk '{print $1}')
+[[ ${actual_consensus_config_digest,,} == ${expected_consensus_config_digest,,} ]] ||
+    die "consensus configuration does not match the selected recovery point"
 
-restore_id=$(date -u +%Y%m%dT%H%M%SZ)
-staging=${snapshot_parent}/.restore-${restore_id}.partial
-old_execution=${execution_dir}.pre-restore-${restore_id}
-old_consensus=${CONSENSUS_DATA_DIR}.pre-restore-${restore_id}
-failed_execution=${execution_dir}.failed-restore-${restore_id}
-failed_consensus=${CONSENSUS_DATA_DIR}.failed-restore-${restore_id}
-for path in "$staging" "$old_execution" "$old_consensus" "$failed_execution" "$failed_consensus"; do
-    [[ ! -e $path ]] || die "restore collision at $path"
+/usr/local/libexec/telos-reth-consensus-binding \
+    "$CONSENSUS_UNIT" "$CONSENSUS_BINARY" "$CONSENSUS_CONFIG" "$CONSENSUS_DATA_DIR" \
+    "$CHAIN_ID" "$AUTHRPC_PORT" "$NODEOS_URL" "$EXECUTION_ANCHOR_BLOCK_NUMBER" \
+    "$EXECUTION_ANCHOR_BLOCK_HASH" "$instance" "$snapshot/checkpoint/checkpoint.json"
+
+[[ $(sha256sum "$snapshot/checkpoint/checkpoint.json" | awk '{print $1}') == "$expected_checkpoint_manifest_digest" &&
+   $(sha256sum "$snapshot/checkpoint/checkpoint.audit.json" | awk '{print $1}') == "$expected_checkpoint_audit_digest" &&
+   $(sha256sum "$snapshot/checkpoint/checkpoint.anchor.json" | awk '{print $1}') == "$expected_execution_anchor_digest" ]] ||
+    die "snapshot checkpoint artifact digests do not match its manifest"
+
+restore_id=$(date -u +%Y%m%dT%H%M%SZ)-$$
+ensure_root_parent() {
+    local parent=$1
+    if [[ ! -e $parent ]]; then
+        install -d -o root -g root -m 0755 "$parent"
+    fi
+    [[ -d $parent && ! -L $parent && $(realpath -e "$parent") == "$parent" &&
+       $(stat -c '%U:%G' "$parent") == root:root ]] ||
+        die "restore target parent must be a root-owned real directory: $parent"
+}
+ensure_root_parent "$(dirname "$execution_dir")"
+ensure_root_parent "$(dirname "$CONSENSUS_DATA_DIR")"
+checkpoint_parent=$(dirname "$CHECKPOINT_MANIFEST")
+[[ -d $checkpoint_parent && ! -L $checkpoint_parent &&
+   $(realpath -e "$checkpoint_parent") == "$checkpoint_parent" &&
+   $(stat -c '%U:%G %a' "$checkpoint_parent") == 'root:telos-reth-config 750' ]] ||
+    die "checkpoint target directory must be canonical root:telos-reth-config mode 0750"
+configure_transaction_paths "$restore_id"
+staged_execution=${staged[0]}
+staged_consensus=${staged[1]}
+staged_manifest=${staged[2]}
+staged_audit=${staged[3]}
+staged_anchor=${staged[4]}
+had_original=(0 0 0 0 0)
+
+for ((index = 0; index < ${#targets[@]}; index++)); do
+    [[ ! -e ${staged[index]} && ! -e ${old[index]} && ! -e ${failed[index]} ]] ||
+        die "restore path collision for ${targets[index]}"
+    if [[ -e ${targets[index]} ]]; then
+        [[ ! -L ${targets[index]} ]] || die "live restore target is a symlink: ${targets[index]}"
+        mountpoint -q "${targets[index]}" &&
+            die "atomic restore target must not be a mount point: ${targets[index]}"
+        had_original[index]=1
+    fi
+done
+[[ ${had_original[0]} == 0 || -d $execution_dir ]] || die "execution target is not a directory"
+[[ ${had_original[1]} == 0 || -d $CONSENSUS_DATA_DIR ]] || die "consensus target is not a directory"
+[[ ${had_original[0]} == 0 || $(stat -c '%U:%G' "$execution_dir") == telos-reth:telos-reth ]] ||
+    die "existing execution target has unexpected ownership"
+[[ ${had_original[1]} == 0 || $(stat -c '%U:%G' "$CONSENSUS_DATA_DIR") == telos-consensus:telos-consensus ]] ||
+    die "existing consensus target has unexpected ownership"
+for ((index = 2; index < 5; index++)); do
+    [[ ${had_original[index]} == 0 || -f ${targets[index]} ]] ||
+        die "checkpoint target is not a regular file: ${targets[index]}"
 done
 
-# Prepare and verify the replacement before any downtime. Reflinks are used when available; this
-# copy may fall back to a full copy for a remote recovery point restored onto another filesystem.
-mkdir -m 0700 "$staging"
-cp -a --one-file-system --reflink=auto "$snapshot/." "$staging/"
-(
-    cd "$staging"
-    sha256sum --check --strict SHA256SUMS
-) >/dev/null || die "staged restore checksum verification failed"
+cleanup_pre_swap() {
+    local rc=$? path
+    trap - EXIT
+    cleanup_temporary_files
+    for path in "${staged[@]}"; do
+        if [[ -d $path && ! -L $path ]]; then
+            find "$path" -xdev -depth -delete
+        elif [[ -e $path ]]; then
+            rm -f "$path"
+        fi
+    done
+    exit "$rc"
+}
+trap cleanup_pre_swap EXIT
 
-old_execution_moved=0
-old_consensus_moved=0
-new_execution_installed=0
-new_consensus_installed=0
-services_stopped=0
+# Stage on each target filesystem so every publication and rollback uses rename(2), including on a
+# clean host where the snapshot was downloaded to a different mount.
+mkdir -m 0700 "$staged_execution" "$staged_consensus"
+cp -a --one-file-system --reflink=auto "$snapshot/execution/." "$staged_execution/"
+cp -a --one-file-system --reflink=auto "$snapshot/consensus/." "$staged_consensus/"
+assert_plain_tree "$staged_execution"
+assert_plain_tree "$staged_consensus"
+chown -R telos-reth:telos-reth "$staged_execution"
+chown -R telos-consensus:telos-consensus "$staged_consensus"
+chmod -R u+rwX,go-rwx "$staged_execution" "$staged_consensus"
+chmod 0750 "$staged_execution" "$staged_consensus"
+cp --no-dereference --preserve=timestamps "$snapshot/checkpoint/checkpoint.json" "$staged_manifest"
+cp --no-dereference --preserve=timestamps "$snapshot/checkpoint/checkpoint.audit.json" "$staged_audit"
+cp --no-dereference --preserve=timestamps "$snapshot/checkpoint/checkpoint.anchor.json" "$staged_anchor"
+chown root:telos-reth-config "$staged_manifest" "$staged_audit" "$staged_anchor"
+chmod 0440 "$staged_manifest" "$staged_audit" "$staged_anchor"
+
+while IFS= read -r checksum_line; do
+    digest=${checksum_line:0:64}
+    relative=${checksum_line:66}
+    case "$relative" in
+        execution/*) candidate=$staged_execution/${relative#execution/} ;;
+        consensus/*) candidate=$staged_consensus/${relative#consensus/} ;;
+        checkpoint/checkpoint.json) candidate=$staged_manifest ;;
+        checkpoint/checkpoint.audit.json) candidate=$staged_audit ;;
+        checkpoint/checkpoint.anchor.json) candidate=$staged_anchor ;;
+        manifest.json) continue ;;
+        *) die "unexpected staged checksum path: $relative" ;;
+    esac
+    [[ -f $candidate && ! -L $candidate ]] || die "staged recovery file is missing: $relative"
+    [[ $(sha256sum "$candidate" | awk '{print $1}') == "$digest" ]] ||
+        die "staged recovery checksum mismatch: $relative"
+done < "$snapshot/SHA256SUMS"
+
+execution_was_active=0
+consensus_was_active=0
+health_timer_was_active=0
+systemctl is-active --quiet "$execution_unit" && execution_was_active=1
+systemctl is-active --quiet "$CONSENSUS_UNIT" && consensus_was_active=1
+systemctl is-active --quiet "$health_timer" && health_timer_was_active=1
+restore_started=0
 committed=0
+
+create_pending_transaction() {
+    local journal_tmp owner_start_ticks permit_nonce had_original_bitmap
+    owner_start_ticks=$(awk '{print $22}' "/proc/$$/stat")
+    [[ $owner_start_ticks =~ ^[1-9][0-9]*$ ]] || return 1
+    permit_nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+    [[ $permit_nonce =~ ^[0-9a-f]{32}$ ]] || return 1
+    had_original_bitmap=$(IFS=; printf '%s' "${had_original[*]}")
+    [[ $had_original_bitmap =~ ^[01]{5}$ ]] || return 1
+    journal_tmp=$(mktemp "$state_dir/.restore.transaction.XXXXXX") || return 1
+    temporary_files+=("$journal_tmp")
+    jq -n \
+        --arg schema "telos-reth-restore-transaction/v1" \
+        --arg status pending \
+        --arg instance "$instance" \
+        --arg restore_id "$restore_id" \
+        --arg snapshot "$snapshot" \
+        --arg had_original "$had_original_bitmap" \
+        --argjson execution_was_active "$execution_was_active" \
+        --argjson consensus_was_active "$consensus_was_active" \
+        --argjson health_timer_was_active "$health_timer_was_active" \
+        --argjson owner_pid "$$" \
+        --argjson owner_start_ticks "$owner_start_ticks" \
+        --arg permit_nonce "$permit_nonce" \
+        --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{schema:$schema,status:$status,instance:$instance,restore_id:$restore_id,snapshot:$snapshot,
+          had_original:$had_original,execution_was_active:$execution_was_active,
+          consensus_was_active:$consensus_was_active,health_timer_was_active:$health_timer_was_active,
+          owner_pid:$owner_pid,owner_start_ticks:$owner_start_ticks,permit_nonce:$permit_nonce,
+          created_at:$created_at,updated_at:$created_at}' > "$journal_tmp" || return 1
+    chown root:root "$journal_tmp" || return 1
+    chmod 0600 "$journal_tmp" || return 1
+    sync -f "$journal_tmp" || return 1
+    mv -f "$journal_tmp" "$transaction_journal" || return 1
+    sync -f "$state_dir" || return 1
+    load_transaction_journal
+}
+
+create_restore_permit() {
+    local permit_tmp expected
+    install -d -o root -g root -m 0700 "$permit_dir" || return 1
+    [[ -d $permit_dir && ! -L $permit_dir && $(realpath -e "$permit_dir") == "$permit_dir" &&
+       $(stat -c '%U:%G %a' "$permit_dir") == 'root:root 700' ]] || return 1
+    [[ ! -e $restore_permit && ! -L $restore_permit ]] || return 1
+    permit_tmp=$(mktemp "$permit_dir/.${instance}.permit.XXXXXX") || return 1
+    temporary_files+=("$permit_tmp")
+    expected=${journal_restore_id}:${journal_permit_nonce}:${journal_owner_pid}:${journal_owner_start_ticks}
+    printf '%s\n' "$expected" > "$permit_tmp" || return 1
+    chown root:root "$permit_tmp" || return 1
+    chmod 0600 "$permit_tmp" || return 1
+    sync -f "$permit_tmp" || return 1
+    mv "$permit_tmp" "$restore_permit" || return 1
+    sync -f "$permit_dir" || return 1
+}
+
+start_restored_pair() {
+    systemctl start "$execution_unit" || return 1
+    systemctl is-active --quiet "$execution_unit" || return 1
+    systemctl start "$CONSENSUS_UNIT" || return 1
+    systemctl is-active --quiet "$CONSENSUS_UNIT" || return 1
+}
 
 wait_for_readiness() {
     local deadline=$(( $(date +%s) + RESTORE_HEALTH_TIMEOUT_SECONDS ))
@@ -137,65 +657,73 @@ wait_for_readiness() {
     return 1
 }
 
+sync_target_parents() {
+    local target parent previous=
+    for target in "${targets[@]}"; do
+        parent=$(dirname "$target")
+        [[ $parent == "$previous" ]] && continue
+        sync -f "$parent"
+        previous=$parent
+    done
+}
+
 rollback() {
+    local rollback_failed=0
     set +e
-    echo "Restore failed; automatically returning both databases to the pre-restore pair" >&2
-    systemctl stop "$CONSENSUS_UNIT"
-    systemctl stop "$execution_unit"
-    if (( new_execution_installed == 1 )) && [[ -e $execution_dir ]]; then
-        mv "$execution_dir" "$failed_execution"
+    echo "Restore failed; returning every replaceable object to the pre-restore set" >&2
+    if ! stop_and_confirm_units; then
+        echo "CRITICAL: a service could not be proven inactive; no live path was renamed" >&2
+        return 1
     fi
-    if (( new_consensus_installed == 1 )) && [[ -e $CONSENSUS_DATA_DIR ]]; then
-        mv "$CONSENSUS_DATA_DIR" "$failed_consensus"
+    recover_original_object_set || rollback_failed=1
+    if (( rollback_failed == 0 )); then
+        persist_transaction_status rolled_back || rollback_failed=1
     fi
-    if (( old_execution_moved == 1 )) && [[ -e $old_execution ]]; then
-        mv "$old_execution" "$execution_dir"
+    if (( rollback_failed == 0 )); then
+        remove_restore_permit || rollback_failed=1
+        restart_recorded_units || rollback_failed=1
     fi
-    if (( old_consensus_moved == 1 )) && [[ -e $old_consensus ]]; then
-        mv "$old_consensus" "$CONSENSUS_DATA_DIR"
-    fi
-    systemctl start "$execution_unit"
-    systemctl start "$CONSENSUS_UNIT"
     set -e
+    (( rollback_failed == 0 ))
 }
 
 finish() {
     local rc=$?
     trap - EXIT
-    if (( rc != 0 && committed == 0 && (services_stopped == 1 || old_execution_moved == 1 || old_consensus_moved == 1) )); then
-        rollback
+    cleanup_temporary_files
+    if (( rc != 0 && committed == 0 && restore_started == 1 )); then
+        rollback || echo "CRITICAL: automatic rollback was incomplete; keep both units out of traffic" >&2
     fi
     exit "$rc"
 }
 trap finish EXIT
 
-systemctl is-active --quiet "$execution_unit" || die "$execution_unit is not active"
-systemctl is-active --quiet "$CONSENSUS_UNIT" || die "$CONSENSUS_UNIT is not active"
-echo "Stopping consensus, then execution, for atomic directory swaps" >&2
-systemctl stop "$CONSENSUS_UNIT"
-systemctl stop "$execution_unit"
-services_stopped=1
+create_pending_transaction || die "could not durably create the restore transaction journal"
+echo "Stopping the configured companion and execution units for the coordinated restore" >&2
+restore_started=1
+stop_and_confirm_units || die "both services could not be proven inactive; no data was renamed"
 
-mv "$execution_dir" "$old_execution"
-old_execution_moved=1
-mv "$CONSENSUS_DATA_DIR" "$old_consensus"
-old_consensus_moved=1
-mv "$staging/execution" "$execution_dir"
-new_execution_installed=1
-mv "$staging/consensus" "$CONSENSUS_DATA_DIR"
-new_consensus_installed=1
-sync -f "$(dirname "$execution_dir")"
-sync -f "$(dirname "$CONSENSUS_DATA_DIR")"
+for ((index = 0; index < ${#targets[@]}; index++)); do
+    if (( had_original[index] == 1 )); then
+        mv "${targets[index]}" "${old[index]}"
+    fi
+    mv "${staged[index]}" "${targets[index]}"
+done
+sync_target_parents
 
-systemctl start "$execution_unit"
-systemctl start "$CONSENSUS_UNIT"
-services_stopped=0
+create_restore_permit || die "could not authorize the fenced validation start"
+start_restored_pair || die "restored execution/consensus pair did not start"
 if ! wait_for_readiness; then
     die "restored pair did not become ready within ${RESTORE_HEALTH_TIMEOUT_SECONDS}s"
 fi
+if (( health_timer_was_active == 1 )); then
+    systemctl start "$health_timer" || die "could not restart the readiness timer"
+fi
 
+persist_transaction_status committed || die "could not durably commit the restore transaction"
 committed=1
-printf '%s instance=%s snapshot=%s execution_rollback=%s consensus_rollback=%s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$instance" "$snapshot" "$old_execution" "$old_consensus" \
-    >> "$state_dir/restores.log"
-echo "Restore succeeded. Preserve $old_execution and $old_consensus through the soak window." >&2
+remove_restore_permit || die "could not remove the restore validation permit"
+printf '%s instance=%s snapshot=%s execution_rollback=%s consensus_rollback=%s checkpoint_rollback_suffix=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$instance" "$snapshot" "${old[0]}" "${old[1]}" \
+    ".pre-restore-${restore_id}" >> "$state_dir/restores.log"
+echo "Restore succeeded. Preserve every .pre-restore-${restore_id} object through the soak window." >&2

@@ -544,6 +544,131 @@ where
                         + AsRef<PF::ProviderRW>,
     >,
 {
+    Ok(init_from_state_dump_inner(
+        &mut reader,
+        provider_factory,
+        etl_config,
+        StateDumpRootPolicy::Header,
+    )?
+    .block_hash)
+}
+
+/// Result of importing state whose canonical header intentionally carries an empty placeholder
+/// root.
+///
+/// This is separate from [`init_from_state_dump`] so Ethereum's normal invariant remains strict:
+/// the dump root must equal the canonical header root. Callers of this specialized path must pin a
+/// non-empty root independently; both the dump declaration and the root recomputed from imported
+/// state are checked against it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlaceholderStateDumpOutcome {
+    /// Number of the canonical header the state was imported at.
+    pub block_number: u64,
+    /// Hash of the exact canonical header the state was imported at.
+    pub block_hash: B256,
+    /// Root recomputed from all imported accounts and storage.
+    pub computed_state_root: B256,
+}
+
+/// Imports and verifies a state dump at a canonical header whose state root is
+/// [`alloy_consensus::EMPTY_ROOT_HASH`].
+///
+/// This exists for chains whose historical canonical headers committed a placeholder instead of
+/// their actual Ethereum trie root. It deliberately cannot accept an arbitrary placeholder or an
+/// empty expected root. The caller is responsible for binding `expected_state_root` and the dump
+/// bytes to an independently trusted chain/header checkpoint.
+///
+/// The standard [`init_from_state_dump`] path is unchanged and continues to require the dump and
+/// computed roots to equal the canonical header root.
+pub fn init_from_state_dump_with_empty_header_root<PF>(
+    mut reader: impl BufRead,
+    provider_factory: &PF,
+    etl_config: EtlConfig,
+    expected_state_root: B256,
+) -> eyre::Result<PlaceholderStateDumpOutcome>
+where
+    PF: DatabaseProviderFactory<
+        ProviderRW: StaticFileProviderFactory
+                        + DBProvider<Tx: DbTxMut>
+                        + BlockNumReader
+                        + BlockHashReader
+                        + ChainSpecProvider
+                        + StageCheckpointWriter
+                        + HistoryWriter
+                        + HeaderProvider
+                        + HashingWriter
+                        + TrieWriter
+                        + StateWriter
+                        + StorageSettingsCache
+                        + RocksDBProviderFactory
+                        + NodePrimitivesProvider
+                        + AsRef<PF::ProviderRW>,
+    >,
+{
+    if expected_state_root == alloy_consensus::EMPTY_ROOT_HASH || expected_state_root == B256::ZERO
+    {
+        return Err(eyre::eyre!(
+            "placeholder state import requires an independently pinned nonzero, non-empty state root"
+        ))
+    }
+
+    init_from_state_dump_inner(
+        &mut reader,
+        provider_factory,
+        etl_config,
+        StateDumpRootPolicy::EmptyHeader { expected_state_root },
+    )
+}
+
+#[derive(Clone, Copy, Debug)]
+enum StateDumpRootPolicy {
+    Header,
+    EmptyHeader { expected_state_root: B256 },
+}
+
+fn verified_state_root(
+    header_hash: B256,
+    header_state_root: B256,
+    root_policy: StateDumpRootPolicy,
+) -> eyre::Result<B256> {
+    match root_policy {
+        StateDumpRootPolicy::Header => Ok(header_state_root),
+        StateDumpRootPolicy::EmptyHeader { expected_state_root } => {
+            if header_state_root != alloy_consensus::EMPTY_ROOT_HASH {
+                return Err(eyre::eyre!(
+                    "placeholder state import requires canonical header {header_hash} to carry EMPTY_ROOT_HASH, got {header_state_root}"
+                ))
+            }
+            Ok(expected_state_root)
+        }
+    }
+}
+
+fn init_from_state_dump_inner<PF>(
+    reader: &mut impl BufRead,
+    provider_factory: &PF,
+    etl_config: EtlConfig,
+    root_policy: StateDumpRootPolicy,
+) -> eyre::Result<PlaceholderStateDumpOutcome>
+where
+    PF: DatabaseProviderFactory<
+        ProviderRW: StaticFileProviderFactory
+                        + DBProvider<Tx: DbTxMut>
+                        + BlockNumReader
+                        + BlockHashReader
+                        + ChainSpecProvider
+                        + StageCheckpointWriter
+                        + HistoryWriter
+                        + HeaderProvider
+                        + HashingWriter
+                        + TrieWriter
+                        + StateWriter
+                        + StorageSettingsCache
+                        + RocksDBProviderFactory
+                        + NodePrimitivesProvider
+                        + AsRef<PF::ProviderRW>,
+    >,
+{
     if etl_config.file_size == 0 {
         return Err(eyre::eyre!("ETL file size cannot be zero"))
     }
@@ -569,23 +694,25 @@ where
         (block, hash, state_root)
     };
 
-    // first line can be state root
-    let dump_state_root = parse_state_root(&mut reader)?;
-    if expected_state_root != dump_state_root {
+    let verified_state_root = verified_state_root(hash, expected_state_root, root_policy)?;
+
+    // first line must declare the independently verified state root
+    let dump_state_root = parse_state_root(reader)?;
+    if verified_state_root != dump_state_root {
         error!(target: "reth::cli",
             ?dump_state_root,
-            ?expected_state_root,
-            "State root from state dump does not match state root in current header."
+            ?verified_state_root,
+            "State root from state dump does not match the required state root."
         );
         return Err(InitStorageError::StateRootMismatch(GotExpected {
             got: dump_state_root,
-            expected: expected_state_root,
+            expected: verified_state_root,
         })
         .into())
     }
 
     // remaining lines are accounts
-    let collector = parse_accounts(&mut reader, etl_config)?;
+    let collector = parse_accounts(reader, etl_config)?;
 
     // write state to db with chunked commits to avoid OOM
     dump_state(collector, provider_factory, block)?;
@@ -602,7 +729,7 @@ where
 
     // compute and compare state root
     let computed_state_root = compute_state_root_chunked(provider_factory)?;
-    if computed_state_root == expected_state_root {
+    if computed_state_root == verified_state_root {
         info!(target: "reth::cli",
             ?computed_state_root,
             "Computed state root matches state root in state dump"
@@ -610,13 +737,13 @@ where
     } else {
         error!(target: "reth::cli",
             ?computed_state_root,
-            ?expected_state_root,
+            ?verified_state_root,
             "Computed state root does not match state root in state dump"
         );
 
         return Err(InitStorageError::StateRootMismatch(GotExpected {
             got: computed_state_root,
-            expected: expected_state_root,
+            expected: verified_state_root,
         })
         .into())
     }
@@ -630,7 +757,7 @@ where
         provider_rw.commit()?;
     }
 
-    Ok(hash)
+    Ok(PlaceholderStateDumpOutcome { block_number: block, block_hash: hash, computed_state_root })
 }
 
 /// Parses and returns expected state root.
@@ -1346,6 +1473,35 @@ mod tests {
                 (Address::with_last_byte(1), U256::from(1)),
                 (Address::with_last_byte(2), U256::from(2))
             ]
+        );
+    }
+
+    #[test]
+    fn placeholder_import_policy_does_not_relax_standard_header_validation() {
+        let header_hash = B256::repeat_byte(0x11);
+        let ethereum_root = B256::repeat_byte(0x22);
+        let pinned_telos_root = B256::repeat_byte(0x33);
+
+        assert_eq!(
+            verified_state_root(header_hash, ethereum_root, StateDumpRootPolicy::Header).unwrap(),
+            ethereum_root
+        );
+        assert!(verified_state_root(
+            header_hash,
+            ethereum_root,
+            StateDumpRootPolicy::EmptyHeader { expected_state_root: pinned_telos_root },
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("EMPTY_ROOT_HASH"));
+        assert_eq!(
+            verified_state_root(
+                header_hash,
+                alloy_consensus::EMPTY_ROOT_HASH,
+                StateDumpRootPolicy::EmptyHeader { expected_state_root: pinned_telos_root },
+            )
+            .unwrap(),
+            pinned_telos_root
         );
     }
 

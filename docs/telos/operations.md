@@ -8,12 +8,13 @@ same host is not a backup.
 
 Telos block production remains authoritative in nodeos. The pinned `telos-consensus-client`
 companion translates the native result and submits the block, receipts, and typed reconciliation
-data in one JWT-authenticated Engine API request. The current candidate validates the extension's
-schema, receipt cardinality, and bounds, but the compatibility schema does not yet carry an
-independent block identity or payload commitment. Production promotion therefore requires a
-versioned, block-bound extension plus two-way reconciliation completeness; missing, replayed,
-wrong-block, malformed, or mismatched data must reject the payload. Startup remains disabled until
-those invariants and the Telos execution rules are implemented and replay-proven.
+data in one JWT-authenticated Engine API request. The V3 reconciliation envelope commits to the
+exact payload, transaction senders, receipts, gas price, revision, and parent execution context.
+Pending reconciliation is not accepted history: only an Engine `VALID` result can promote the
+matching digest, while `INVALID` removes it and conflicting accepted metadata is immutable. The
+Telos execution rules and lifecycle are implemented and covered by focused tests, but production
+startup remains deliberately gated until the exact candidate passes live companion, restart/reorg,
+and finalized-RPC parity qualification. The independent replay-safety gate remains closed.
 
 There is no production filesystem state-diff side channel. In particular, do not recreate
 `/tmp/telos-extra-fields`, do not allow a companion to publish unauthenticated JSON, and do not add
@@ -22,10 +23,20 @@ ever reintroduced, it requires a separate threat model, an instance-specific dir
 `/tmp`, atomic `fsync` plus rename, strict producer/consumer ownership, size and age bounds, and a
 block-bound authenticated envelope. Such a deployment is not covered by this runbook.
 
-The Engine API, nodeos API, metrics, and unproxied JSON-RPC listeners bind loopback. Public JSON-RPC
-is exposed only through a TLS reverse proxy with request-size limits, per-method policy, connection
-limits, and abuse controls. Never publish port 8551, a JWT, a signer credential, `debug`, `admin`, or
-unrestricted trace methods.
+The Engine API, nodeos API, metrics, and unproxied JSON-RPC listeners bind loopback. HTTP is always
+enabled; WebSocket is disabled by default and, when explicitly enabled, is also fixed to loopback.
+Public JSON-RPC is exposed only through a TLS reverse proxy with request-size limits, per-method
+policy, connection limits, and abuse controls. Never publish port 8551, a JWT, a signer credential,
+`debug`, `admin`, or unrestricted trace methods.
+
+The supported production JSON-RPC namespace allowlist is `eth,net,web3`. In addition to the proxy
+allowlist, the binary has an independent replay-safety gate: until historical Telos replay is
+qualified, startup rejects `debug`, `trace`, and `ots` on HTTP or WebSocket and disables regular IPC
+because upstream IPC exposes every namespace. It also removes `eth_callBundle`, `eth_callMany`,
+`eth_simulateV1`, all four `eth_getBlockAccessList*` variants, and `mev_simBundle` from regular and
+authenticated transports. The JWT-authenticated Engine API, including optional authenticated
+Engine IPC, is configured separately and its core `engine_*` methods remain available to the
+companion.
 
 The transaction forwarder pins both network identities before using its signer: EVM chain 40 must
 pair with native chain `4667b205c6838ef70ff7988f6e8257e8be0e1284a2f59699054a018f743b1d11`,
@@ -40,12 +51,13 @@ service than the forwarder uses.
 Use a dedicated Linux host or VM for each production instance. Do not place both HA replicas, the
 only nodeos source, or remote backups on one failure domain. The reference assets require:
 
-- systemd 252 or newer, Bash 5, GNU coreutils, util-linux, curl, jq, Python 3, restic, Prometheus,
+- systemd 252 or newer, Bash 5, GNU coreutils, util-linux, curl, jq, Python 3.11 or newer, restic, Prometheus,
   and node_exporter;
 - a 64-bit little-endian Linux release artifact from this repository, verified against its
   published SHA-256 checksum;
 - XFS created with `reflink=1` or Btrfs, with execution data, companion data, and local snapshot
-  staging on the same filesystem;
+  staging on the same filesystem; mount their common parent, because the two live data directories
+  themselves must remain renameable directories rather than mount points;
 - ECC memory, production NVMe with power-loss protection, time synchronization, and at least 20%
   sustained free space;
 - an independently administered, encrypted off-host restic repository, preferably backed by
@@ -59,11 +71,13 @@ upgrade forever.
 
 ## Install
 
-Create static service accounts. The companion should use its own `telos-consensus` account.
+The signed release archive contains the execution binary, both checkpoint tools, checkpoint
+scripts, and the complete `ops/` tree. Create static service accounts and the read-only shared
+configuration group. The companion must use its own `telos-consensus` account.
 
 ```bash
-sudo useradd --system --home /var/lib/telos-reth --shell /usr/sbin/nologin telos-reth
-sudo useradd --system --home /var/lib/telos-reth-health --shell /usr/sbin/nologin telos-monitor
+sudo install -o root -g root -m 0644 ops/sysusers.d/telos-reth.conf /etc/sysusers.d/
+sudo systemd-sysusers /etc/sysusers.d/telos-reth.conf
 sudo install -o root -g root -m 0755 ops/scripts/telos-reth-* /usr/local/libexec/
 sudo install -o root -g root -m 0644 ops/systemd/* /etc/systemd/system/
 sudo install -o root -g root -m 0644 ops/tmpfiles.d/telos-reth.conf /etc/tmpfiles.d/
@@ -85,43 +99,74 @@ Repeat with `consensus` for the exact companion build in the release compatibili
 release helper never restarts services and never deletes an older release.
 
 Copy the appropriate `ops/config/*.env.example` to `/etc/telos-reth/<instance>/node.env`. Replace
-every placeholder, quote the exact companion `--version` output, and pin both binary digests.
+every placeholder, quote the exact companion `--version` output, and pin both binary digests plus
+the lowercase, non-prefixed SHA-256 of `checkpoint.json`. `CONSENSUS_UNIT` appears only in
+`node.env`; `backup.env` must never override deployment identity.
 
 ```bash
-sudo install -d -o root -g root -m 0750 /etc/telos-reth/mainnet
-sudo install -o root -g root -m 0640 ops/config/mainnet.env.example \
+sudo install -d -o root -g telos-reth-config -m 0750 /etc/telos-reth/mainnet
+sudo install -o root -g telos-reth-config -m 0440 ops/config/mainnet.env.example \
   /etc/telos-reth/mainnet/node.env
-sudo install -o root -g root -m 0640 ops/config/backup.env.example \
+sudo install -o root -g root -m 0600 ops/config/backup.env.example \
   /etc/telos-reth/mainnet/backup.env
 sudo sed -i 's/REPLACE_WITH_INSTANCE/mainnet/g' /etc/telos-reth/mainnet/backup.env
+sudo install -o root -g telos-reth-config -m 0440 checkpoint.json checkpoint.audit.json \
+  checkpoint.anchor.json /etc/telos-reth/mainnet/
+sha256sum /etc/telos-reth/mainnet/checkpoint.json
 ```
 
 Review the files after editing; do not paste credentials into either environment file. Provision
-the JWT and transaction-forwarder signer as root-only source files. The unit copies them into a
-private systemd credential mount, so process arguments contain paths, never secret values.
+the JWT as a root-only source file. For a forwarding RPC, also provision the transaction signer and
+set both signer identity fields. For a read-only or shadow RPC, leave both signer fields empty and
+omit `signer.key`; the unit supplies a non-secret `disabled` credential fallback and the launcher omits
+all four forwarder arguments. Partial forwarding configuration fails preflight. Credentials are
+copied into a private systemd credential mount, so process arguments contain paths, never secret
+values.
 
 ```bash
 openssl rand -hex 32 | sudo tee /etc/telos-reth/mainnet/jwt.hex >/dev/null
+# Forwarding nodes only:
 sudo install -o root -g root -m 0400 /secure/provisioning/telos-signer.key \
   /etc/telos-reth/mainnet/signer.key
 sudo chown root:root /etc/telos-reth/mainnet/jwt.hex
 sudo chmod 0400 /etc/telos-reth/mainnet/jwt.hex
 ```
 
+Install the companion's reviewed `consensus.toml` as
+`/etc/telos-reth/<instance>/consensus.toml`, owned by `root:telos-reth-config` with mode `0440`.
+It must pin the same chain, native endpoint, Engine port, sparse anchor number/hash, native chain
+ID, native anchor number/ID, and first-child EVM hash from checkpoint manifest v2. Set `prev_hash`
+to the execution anchor, require `validate_hash` to equal the manifest's
+`native_anchor.evm_first_child_block_hash`, and set `evm_start_block` plus
+`execution_context_anchor_block` to `anchor + 1`. `data_path` must be
+`/var/lib/telos-consensus/<instance>` and `jwt_secret_path` must be
+`/run/credentials/telos-consensus-client@<instance>.service/jwt.hex`.
+
+```bash
+sudo install -o root -g telos-reth-config -m 0440 /secure/provisioning/consensus-mainnet.toml \
+  /etc/telos-reth/mainnet/consensus.toml
+```
+
 The same JWT source file is loaded by the companion unit. Its required service contract is:
 
 - run as `telos-consensus`, with `NoNewPrivileges`, a strict filesystem sandbox, bounded restarts,
   and nodeos plus loopback Engine network access only;
+- use the exact name `telos-consensus-client@<instance>.service`, execute
+  `/usr/local/bin/telos-consensus-client --config /etc/telos-reth/<instance>/consensus.toml`, and
+  include `SupplementaryGroups=telos-reth-config`;
 - start after `telos-reth@<instance>.service`, stop before it, and read the Engine JWT through
-  `LoadCredential=jwt.hex:/etc/telos-reth/<instance>/jwt.hex` and a `jwt_secret_file` option;
+  `LoadCredential=jwt.hex:/etc/telos-reth/<instance>/jwt.hex`;
+- before starting, revalidate the complete checkpoint/companion binding and require an authenticated
+  Engine capability probe to succeed;
 - use `/var/lib/telos-consensus/<instance>` as its only writable persistent directory;
 - submit the release-matrix reconciliation schema directly as the second parameter of the same
   authenticated `engine_newPayloadV1` request;
 - expose no signer, JWT, or native privileged credential in argv, environment, TOML, or logs.
 
-Readiness and snapshot jobs intentionally fail until the configured companion unit is active and
-its exact `--version` output matches `CONSENSUS_VERSION`. A differently named or configured unit
-must meet this contract and be set explicitly in `CONSENSUS_UNIT`.
+Preflight, readiness, snapshot, and restore reject a differently named unit, binary/config argv,
+service account, writable-data sandbox, runtime executable, chain/endpoint/anchor config, JWT
+credential binding, digest, or version. This makes `CONSENSUS_UNIT` one identity rather than a
+label that could accidentally point at an unrelated service.
 
 Initialize a remote restic repository once, using credential files outside the data directories.
 For cloud backends, prefer host workload identity over long-lived access keys. The snapshot tool
@@ -160,12 +205,15 @@ material instead of retaining it in the log platform.
 
 `telos-reth-readiness` returns success only when all of these checks pass in the same run:
 
-1. the execution and exact pinned companion systemd units are active;
-2. a fresh short-lived JWT can call `engine_exchangeCapabilities` on loopback;
-3. local and independent canonical EVM endpoints return the configured chain ID;
-4. nodeos returns the pinned native chain ID, a nonzero LIB, and a fresh head timestamp;
-5. local finalized height advances and stays within the configured lag bound;
-6. hashes at the common finalized height and every configured depth match the canonical EVM RPC.
+1. the execution and exact pinned companion systemd units are active, and the companion unit,
+   installed binary, configuration, state path, version, and SHA-256 match the deployment;
+2. the checkpoint manifest still matches `CHECKPOINT_MANIFEST_SHA256`, and `TELOS_ENDPOINT` is the
+   same normalized endpoint as `NODEOS_URL`;
+3. a fresh short-lived JWT can call the exact two-method Telos Engine capability surface;
+4. local and independent canonical EVM endpoints return the configured chain ID and anchor hash;
+5. nodeos returns the pinned native chain ID, a nonzero LIB, and a fresh head timestamp;
+6. local finalized height advances and stays within the configured lag bound;
+7. hashes at the common finalized height and every configured depth match the canonical EVM RPC.
 
 An unavailable canonical oracle makes the node not ready. This may reduce availability, but it
 cannot leave a divergent node falsely green. HTTP 200, process liveness, `eth_syncing`, peer count,
@@ -175,17 +223,29 @@ strengthen it; weakening or disabling finalized parity requires a release risk r
 ## Backup and restore
 
 The snapshot job stops the companion and then execution client, takes copy-on-write clones of both
-databases, and restarts them before performing expensive hashes. It rejects symlinks, computes a
-complete `SHA256SUMS`, verifies it, `fsync`s metadata, and atomically publishes the recovery-point
-directory. It then uploads that complete directory to restic and reads the remote snapshot metadata
-back. The scheduled run is failed until both local and remote stages succeed.
+databases plus the exact checkpoint trio, and restarts them before performing expensive hashes.
+Each stop is tracked independently, and the job's mount namespace exposes both live databases
+read-only. It rejects nested mounts, symlinks, sockets, devices, FIFOs, unsupported path names, and
+an incomplete file inventory. Cloned data is made read-only, a complete `SHA256SUMS` is verified,
+metadata is `fsync`ed, and the recovery-point directory is atomically published. The complete
+`telos-reth-snapshot/v2` point is then uploaded to restic, its remote metadata is read back, and
+`restic check --read-data-subset` performs an authenticated read of repository pack data. The
+scheduled run fails until the local copy, remote upload, metadata readback, and data check succeed.
 
 The local clone shares a host, filesystem, controller, and often physical media with the live
 database. It protects short rollbacks only. It does not satisfy disaster recovery. Alert if no
-off-host copy succeeds and verifies within eight hours. Use separate credentials and retention
-administration so compromise of the RPC host cannot delete every backup.
+off-host copy succeeds and its data verifies within eight hours. Use separate credentials and
+retention administration so compromise of the RPC host cannot delete every backup.
 
-Run an authenticated repository check weekly and a full read at least monthly:
+`RESTIC_CHECK_READ_DATA_PERCENT` controls the random pack-data subset read after every six-hour
+snapshot. It is required and restricted to an integer from 1 through 10; the example uses `1` to
+bound routine bandwidth. A successful upload advances the remote-success metric, but only a
+successful authenticated pack read advances
+`telos_reth_snapshot_last_data_verified_timestamp_seconds`. A failed check therefore leaves the
+last known data-verification timestamp stale and fails the snapshot service.
+
+The per-snapshot subset is continuous corruption detection, not exhaustive coverage. Run a larger
+authenticated repository check weekly and a full read at least monthly:
 
 ```bash
 sudo restic --repository-file /etc/telos-reth/mainnet/restic.repository \
@@ -203,19 +263,43 @@ Perform a full restore drill on a clean, isolated host at least quarterly:
 2. copy the complete timestamped recovery-point directory under the configured
    `SNAPSHOT_ROOT/<instance>`;
 3. install and activate the exact execution and companion digests recorded in `manifest.json`;
-4. update the deployment pins, keep public traffic disabled, then run:
+4. install `node.env`, `backup.env`, `consensus.toml`, systemd units, users, and credentials, then
+   update `BINARY_SHA256`, `CONSENSUS_SHA256`, and `CHECKPOINT_MANIFEST_SHA256` for the selected
+   recovery point; `consensus.toml` must have the `config_sha256` recorded in `manifest.json`, while
+   the live data directories and checkpoint trio may be absent on a clean host;
+5. keep public traffic disabled, then run:
 
 ```bash
 sudo /usr/local/libexec/telos-reth-restore mainnet \
   /var/lib/telos-reth-snapshots/mainnet/20260101T000000Z-0123456789ab --confirm
 ```
 
-The restore tool verifies source and staged checksums before downtime, refuses a different chain,
-snapshot schema, execution digest, companion digest, or companion version, and swaps both database
-directories while services are stopped. If fail-closed readiness does not recover within the
-configured timeout, it automatically reinstates both pre-restore directories. On success, preserve
-the `.pre-restore-*` pair until the soak is accepted; remove it only through a separately reviewed
-change.
+The restore tool verifies an exact file inventory, source and target-filesystem staged checksums,
+service ownership, chain, snapshot schema, checkpoint digest, execution digest, companion digest,
+and companion version. Two databases and three checkpoint files cannot be renamed atomically
+across filesystems. Before the first rename, the tool therefore fsyncs
+`/var/lib/telos-reth-backup/<instance>/restore.transaction.json` with the complete original-object
+bitmap and rollback identity. A `pending` journal fences ordinary execution startup. Only the live
+restore process may perform its validation start, using a root-only volatile permit bound to its
+PID start time, nonce, and held instance lock. The journal becomes `committed` only after every
+target filesystem is synced and the restored pair passes readiness.
+
+On failed readiness, the tool first proves both units inactive again and idempotently reinstates
+the entire pre-restore object set before durably recording `rolled_back`. If a unit cannot be
+stopped, rollback deliberately performs no rename. A process kill or power loss can therefore
+leave physical paths partway through publication, but that state remains visibly fenced and cannot
+pass preflight. After power is stable, do not move any `.restore-*`, `.pre-restore-*`, or
+`.failed-restore-*` path by hand. Recover the old complete set with:
+
+```bash
+sudo /usr/local/libexec/telos-reth-restore mainnet --recover
+```
+
+Recovery can be rerun after another interruption; it keeps the journal `pending` until all five
+old-object outcomes are synced. Preserve every `.pre-restore-*`, `.restore-*.partial`, and
+`.failed-restore-*` object until the restore or rollback soak is accepted; remove it only through a
+separately reviewed change. A malformed journal, ambiguous path state, failed fsync, or unprovable
+service stop remains a manual incident and deliberately keeps startup closed.
 
 ## Upgrade and rollback
 
@@ -224,8 +308,8 @@ Upgrade one replica at a time. Never restart all RPC replicas or both failure do
 1. Verify CI provenance, release signatures/checksums, upstream Reth base, chain specs, companion
    compatibility, and database migration notes.
 2. Drain the canary from public and transaction-forwarding traffic. Confirm readiness is green.
-3. Run `systemctl start --wait telos-reth-snapshot@<instance>.service`; require its remote-success
-   metric and record its snapshot and restic IDs.
+3. Run `systemctl start --wait telos-reth-snapshot@<instance>.service`; require both its
+   remote-success and remote-data-verification metrics, then record its snapshot and restic IDs.
 4. Install both artifacts without activating them. Update `node.env` exact versions and digests in
    one reviewed change.
 5. Stop the companion, then execution client. Atomically activate the companion and execution
@@ -270,7 +354,7 @@ matrix containing the Telos release tag and digest, upstream Reth tag and commit
 tag/version/digest, reconciliation schema, both genesis hashes, and snapshot schema. Promotion is
 blocked until all of the following have evidence attached to a release:
 
-- a snapshot created by this Reth 2 line (`telos-reth-snapshot/v1`) restores on a clean host with
+- a snapshot created by this Reth 2 line (`telos-reth-snapshot/v2`) restores on a clean host with
   the exact companion version and reaches canonical finalized parity;
 - missing, oversized, malformed, wrong-block, partial-receipt, duplicate, and replayed reconciliation
   inputs all reject without a durable partial commit;

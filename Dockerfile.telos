@@ -66,10 +66,12 @@ RUN test -n "${SOURCE_COMMIT}" && \
         --locked \
         --profile maxperf \
         --package telos-reth \
-        --bin telos-reth
+        --bin telos-reth \
+        --bin telos-checkpoint-bootstrap
 
 FROM scratch AS artifact
 COPY --from=builder /src/target/maxperf/telos-reth /telos-reth
+COPY --from=builder /src/target/maxperf/telos-checkpoint-bootstrap /telos-checkpoint-bootstrap
 
 FROM ${RUNTIME_IMAGE} AS runtime-base
 

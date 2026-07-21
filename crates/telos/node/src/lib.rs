@@ -16,11 +16,22 @@ use reth_revm as _;
 use revm as _;
 
 pub mod args;
+pub mod block;
 pub mod chainspec;
+pub mod checkpoint;
 pub mod engine;
 pub mod evm;
+pub mod execution;
+pub mod frame;
+pub mod handler;
+pub mod instructions;
 pub mod node;
+pub mod receipt;
 pub mod rpc;
+pub mod rpc_policy;
+pub mod sidecar;
+pub mod startup;
+pub mod tree;
 pub mod types;
 
 pub use args::TelosArgs;
@@ -36,9 +47,14 @@ pub const DEFAULT_MAX_EXECUTE_BLOCK_BATCH_SIZE: usize = 50;
 
 /// Whether the selected revm backend implements the Telos per-transaction execution context.
 ///
-/// Upstream revm 41 does not expose Telos's fixed gas price, revision number, or first-new-address
-/// transaction fields. In addition, the payload-local sender helper cannot cover stored-block,
-/// backfill, pruning, or RPC recovery; those paths require a Telos transaction type or equivalent
-/// chain-aware recovery throughout Reth. Keep startup fail-closed until both gaps are ported and
-/// verified.
+/// The revm 41 execution port and chain-aware sender recovery are implemented, but this release
+/// gate remains closed until the exact build has completed checkpoint bootstrap, live companion
+/// ingestion, restart/reorg, and finalized-RPC parity qualification. Opening the gate is therefore
+/// an explicit promotion decision rather than an implementation fallback.
 pub const TELOS_REVM_EXECUTION_READY: bool = false;
+
+/// Whether historical replay and tracing paths are proven to apply Telos execution semantics.
+///
+/// Keep this independent from [`TELOS_REVM_EXECUTION_READY`]: canonical block execution can be
+/// production-qualified before every diagnostic replay implementation is safe to expose.
+pub const TELOS_RPC_REPLAY_READY: bool = false;

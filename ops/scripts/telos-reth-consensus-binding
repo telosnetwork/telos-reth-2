@@ -1,0 +1,261 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+die() {
+    echo "telos-reth consensus binding: $*" >&2
+    exit 1
+}
+
+[[ $# -eq 11 ]] ||
+    die "usage: $0 UNIT BINARY CONFIG DATA_DIR CHAIN_ID AUTHRPC_PORT NODEOS_URL ANCHOR_NUMBER ANCHOR_HASH INSTANCE CHECKPOINT_MANIFEST"
+
+unit=$1
+binary=$2
+config=$3
+data_dir=$4
+chain_id=$5
+authrpc_port=$6
+nodeos_url=$7
+anchor_number=$8
+anchor_hash=${9,,}
+instance=${10}
+checkpoint_manifest=${11}
+
+[[ $instance =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || die "invalid instance name"
+[[ $unit == "telos-consensus-client@${instance}.service" ]] ||
+    die "CONSENSUS_UNIT must be telos-consensus-client@${instance}.service"
+[[ $binary == /usr/local/bin/telos-consensus-client ]] ||
+    die "CONSENSUS_BINARY must use the managed release link"
+[[ $config == "/etc/telos-reth/${instance}/consensus.toml" ]] ||
+    die "CONSENSUS_CONFIG must use the instance configuration path"
+[[ $data_dir == "/var/lib/telos-consensus/${instance}" ]] ||
+    die "CONSENSUS_DATA_DIR must use the instance state path"
+[[ $chain_id =~ ^(40|41)$ ]] || die "invalid Telos EVM chain ID"
+[[ $authrpc_port =~ ^[0-9]+$ ]] || die "invalid Engine API port"
+[[ $anchor_number =~ ^[1-9][0-9]*$ ]] || die "invalid execution anchor height"
+[[ $anchor_hash =~ ^0x[[:xdigit:]]{64}$ ]] || die "invalid execution anchor hash"
+[[ -f $checkpoint_manifest && ! -L $checkpoint_manifest ]] ||
+    die "checkpoint manifest must be a regular non-symlink file"
+
+[[ -f $config && ! -L $config ]] || die "$config must be a regular non-symlink file"
+[[ $(realpath -e "$config") == "$config" ]] || die "$config must use its canonical path"
+config_directory=$(dirname "$config")
+[[ -d $config_directory && ! -L $config_directory &&
+   $(realpath -e "$config_directory") == "$config_directory" &&
+   $(stat -c '%U:%G %a' "$config_directory") == 'root:telos-reth-config 750' ]] ||
+    die "$config_directory must be root:telos-reth-config mode 0750"
+[[ $(stat -c '%U:%G' "$config") == root:telos-reth-config ]] ||
+    die "$config must be owned by root:telos-reth-config"
+config_mode=$(stat -c '%a' "$config")
+[[ $config_mode == 440 ]] || die "$config must have mode 0440"
+
+[[ $(systemctl show "$unit" --property=LoadState --value) == loaded ]] || die "$unit is not loaded"
+[[ $(systemctl show "$unit" --property=User --value) == telos-consensus ]] ||
+    die "$unit must run as telos-consensus"
+[[ $(systemctl show "$unit" --property=Group --value) == telos-consensus ]] ||
+    die "$unit must use group telos-consensus"
+supplementary_groups=$(systemctl show "$unit" --property=SupplementaryGroups --value)
+[[ " $supplementary_groups " == *' telos-reth-config '* ]] ||
+    die "$unit must use SupplementaryGroups=telos-reth-config"
+
+exec_start=$(systemctl show "$unit" --property=ExecStart --value)
+[[ $exec_start == *"path=${binary} ;"* ]] ||
+    die "$unit ExecStart is not bound to $binary"
+[[ $exec_start == *"--config ${config}"* || $exec_start == *"--config=${config}"* ]] ||
+    die "$unit ExecStart is not bound to $config"
+
+state_directories=$(systemctl show "$unit" --property=StateDirectory --value)
+read_write_paths=$(systemctl show "$unit" --property=ReadWritePaths --value)
+[[ $state_directories == *"telos-consensus/${instance}"* ||
+   $read_write_paths == *"${data_dir}"* ]] ||
+    die "$unit does not grant write access to $data_dir"
+
+load_credentials=$(systemctl show "$unit" --property=LoadCredential --value)
+[[ $load_credentials == *"jwt.hex:/etc/telos-reth/${instance}/jwt.hex"* ]] ||
+    die "$unit is not bound to the instance Engine JWT credential"
+
+python3 - "$config" "$data_dir" "$chain_id" "$authrpc_port" "$nodeos_url" \
+    "$anchor_number" "$anchor_hash" "$unit" "$checkpoint_manifest" <<'PY'
+import json
+import pathlib
+import sys
+import tomllib
+import urllib.parse
+
+(
+    config_path,
+    expected_data_path,
+    expected_chain_id,
+    expected_authrpc_port,
+    expected_nodeos_url,
+    expected_anchor_number,
+    expected_anchor_hash,
+    unit,
+    checkpoint_manifest_path,
+) = sys.argv[1:]
+
+with pathlib.Path(config_path).open("rb") as handle:
+    config = tomllib.load(handle)
+with pathlib.Path(checkpoint_manifest_path).open("r", encoding="utf-8") as handle:
+    checkpoint_manifest = json.load(handle)
+
+def normalized_url(value: object) -> str:
+    if not isinstance(value, str):
+        raise SystemExit("endpoint is not a string")
+    parsed = urllib.parse.urlsplit(value.rstrip("/"))
+    if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+        raise SystemExit(f"unsafe endpoint: {value}")
+    return urllib.parse.urlunsplit(parsed)
+
+def hex32(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise SystemExit(f"{label} is not a string")
+    normalized = value.lower()
+    if normalized.startswith("0x"):
+        normalized = normalized[2:]
+    if len(normalized) != 64 or any(character not in "0123456789abcdef" for character in normalized):
+        raise SystemExit(f"{label} is not exactly 32 bytes of hexadecimal")
+    return "0x" + normalized
+
+def exact_int(value: object, label: str, *, minimum: int = 0) -> int:
+    if type(value) is not int or value < minimum:
+        raise SystemExit(f"{label} is not an integer greater than or equal to {minimum}")
+    return value
+
+if config.get("chain_id") != int(expected_chain_id):
+    raise SystemExit("consensus chain_id does not match node.env")
+if pathlib.Path(str(config.get("data_path", ""))).resolve() != pathlib.Path(expected_data_path):
+    raise SystemExit("consensus data_path does not match CONSENSUS_DATA_DIR")
+expected_engine = f"http://127.0.0.1:{expected_authrpc_port}"
+if normalized_url(config.get("execution_endpoint")) != expected_engine:
+    raise SystemExit("consensus execution_endpoint does not match the loopback Engine API")
+if normalized_url(config.get("chain_endpoint")) != normalized_url(expected_nodeos_url):
+    raise SystemExit("consensus chain_endpoint does not match NODEOS_URL")
+if exact_int(config.get("execution_anchor_block_number"), "consensus execution anchor height", minimum=1) != int(expected_anchor_number):
+    raise SystemExit("consensus execution anchor height does not match node.env")
+configured_hash = hex32(config.get("execution_anchor_block_hash"), "consensus execution anchor hash")
+if configured_hash != expected_anchor_hash:
+    raise SystemExit("consensus execution anchor hash does not match node.env")
+expected_start = int(expected_anchor_number) + 1
+if exact_int(config.get("evm_start_block"), "consensus evm_start_block", minimum=1) != expected_start:
+    raise SystemExit("consensus evm_start_block is not the child of the execution anchor")
+if exact_int(config.get("execution_context_anchor_block"), "consensus execution context anchor", minimum=1) != expected_start:
+    raise SystemExit("consensus execution context is not anchored at evm_start_block")
+if hex32(config.get("prev_hash"), "consensus EVM parent hash") != expected_anchor_hash:
+    raise SystemExit("consensus prev_hash does not match the execution anchor")
+if checkpoint_manifest.get("version") != 2:
+    raise SystemExit("checkpoint manifest is not schema version 2")
+anchor = checkpoint_manifest.get("execution_anchor", {})
+if checkpoint_manifest.get("canonical_chain", {}).get("chain_id") != int(expected_chain_id):
+    raise SystemExit("checkpoint canonical chain does not match node.env")
+if anchor.get("parent_block_number") != int(expected_anchor_number):
+    raise SystemExit("checkpoint anchor height does not match node.env")
+checkpoint_anchor_hash = str(anchor.get("parent_block_hash", "")).lower()
+checkpoint_anchor_hash = (
+    checkpoint_anchor_hash
+    if checkpoint_anchor_hash.startswith("0x")
+    else f"0x{checkpoint_anchor_hash}"
+)
+if checkpoint_anchor_hash != expected_anchor_hash:
+    raise SystemExit("checkpoint anchor hash does not match node.env")
+native_anchor = checkpoint_manifest.get("native_anchor")
+if not isinstance(native_anchor, dict):
+    raise SystemExit("checkpoint native anchor is missing")
+expected_native_chain_id = {
+    "40": "0x4667b205c6838ef70ff7988f6e8257e8be0e1284a2f59699054a018f743b1d11",
+    "41": "0x1eaa0824707c8c16bd25145493bf062aecddfeb56c736f6ba6397f3195f33c9f",
+}[expected_chain_id]
+manifest_native_chain_id = hex32(native_anchor.get("chain_id"), "checkpoint native chain ID")
+if manifest_native_chain_id != expected_native_chain_id:
+    raise SystemExit("checkpoint native chain ID does not match the EVM network")
+if hex32(config.get("native_chain_id"), "consensus native chain ID") != manifest_native_chain_id:
+    raise SystemExit("consensus native_chain_id does not match the checkpoint")
+native_anchor_number = exact_int(
+    native_anchor.get("block_number"), "checkpoint native anchor height", minimum=1
+)
+native_anchor_id = hex32(native_anchor.get("block_id"), "checkpoint native anchor ID")
+native_child_number = exact_int(
+    native_anchor.get("first_child_block_number"), "checkpoint native first-child height", minimum=1
+)
+native_child_id = hex32(native_anchor.get("first_child_block_id"), "checkpoint native first-child ID")
+if native_child_number != native_anchor_number + 1:
+    raise SystemExit("checkpoint native first child is not the exact anchor successor")
+for label, number, block_id in (
+    ("anchor", native_anchor_number, native_anchor_id),
+    ("first child", native_child_number, native_child_id),
+):
+    if int(block_id[2:10], 16) != number:
+        raise SystemExit(f"checkpoint native {label} ID does not encode its block number")
+if native_child_id == native_anchor_id:
+    raise SystemExit("checkpoint native first child reuses the anchor ID")
+if exact_int(
+    config.get("execution_anchor_native_block_number"),
+    "consensus native anchor height",
+    minimum=1,
+) != native_anchor_number:
+    raise SystemExit("consensus native anchor height does not match the checkpoint")
+if hex32(
+    config.get("execution_anchor_native_block_hash"), "consensus native anchor ID"
+) != native_anchor_id:
+    raise SystemExit("consensus native anchor ID does not match the checkpoint")
+evm_first_child_hash = hex32(
+    native_anchor.get("evm_first_child_block_hash"), "checkpoint EVM first-child hash"
+)
+if evm_first_child_hash == expected_anchor_hash:
+    raise SystemExit("checkpoint EVM first child reuses the execution anchor hash")
+if hex32(config.get("validate_hash"), "consensus EVM first-child hash") != evm_first_child_hash:
+    raise SystemExit("consensus validate_hash does not match the checkpoint first child")
+try:
+    configured_gas_price = int(str(config.get("execution_context_starting_gas_price")), 0)
+    checkpoint_gas_price = int(str(anchor.get("starting_gas_price")), 0)
+    native_gas_price = int(str(native_anchor.get("starting_gas_price")), 0)
+except (TypeError, ValueError) as error:
+    raise SystemExit(f"invalid starting gas price: {error}") from error
+if configured_gas_price != checkpoint_gas_price or native_gas_price != checkpoint_gas_price:
+    raise SystemExit("consensus starting gas price does not match the checkpoint")
+configured_revision = exact_int(
+    config.get("execution_context_starting_revision"), "consensus starting revision"
+)
+anchor_revision = exact_int(anchor.get("starting_revision"), "checkpoint execution starting revision")
+native_revision = exact_int(
+    native_anchor.get("starting_revision"), "checkpoint native starting revision"
+)
+if configured_revision != anchor_revision or native_revision != anchor_revision:
+    raise SystemExit("consensus starting revision does not match the checkpoint")
+expected_jwt = f"/run/credentials/{unit}/jwt.hex"
+if config.get("jwt_secret_path") != expected_jwt:
+    raise SystemExit("consensus jwt_secret_path is not the unit's private credential path")
+PY
+
+if systemctl is-active --quiet "$unit"; then
+    main_pid=$(systemctl show "$unit" --property=MainPID --value)
+    [[ $main_pid =~ ^[1-9][0-9]*$ ]] || die "$unit has no valid MainPID"
+    # Root-run preflight/snapshot checks also bind the current process inode and argv. The
+    # unprivileged readiness sandbox may intentionally hide another user's /proc entries; static
+    # ExecStart/config binding above remains mandatory in either case.
+    process_visible=0
+    if running_binary=$(readlink -f "/proc/${main_pid}/exe" 2>/dev/null) &&
+       [[ -r /proc/${main_pid}/cmdline ]]; then
+        process_visible=1
+        configured_binary=$(readlink -f "$binary")
+        [[ $running_binary == "$configured_binary" ]] ||
+            die "$unit is running $running_binary instead of $configured_binary"
+        running_binary_inode=$(stat -Lc '%d:%i' "/proc/${main_pid}/exe")
+        configured_binary_inode=$(stat -Lc '%d:%i' "$configured_binary")
+        [[ $running_binary_inode == "$configured_binary_inode" ]] ||
+            die "$unit is running a replaced executable inode"
+        mapfile -d '' -t running_argv < "/proc/${main_pid}/cmdline"
+        config_bound=0
+        for ((index = 0; index < ${#running_argv[@]}; index++)); do
+            if [[ ${running_argv[index]} == "--config=${config}" ]]; then
+                config_bound=1
+            elif [[ ${running_argv[index]} == --config &&
+                    ${running_argv[index + 1]:-} == "$config" ]]; then
+                config_bound=1
+            fi
+        done
+        (( config_bound == 1 )) || die "$unit is not running with $config"
+    fi
+    (( EUID != 0 || process_visible == 1 )) ||
+        die "$unit is active but its executable and argv could not be inspected as root"
+fi

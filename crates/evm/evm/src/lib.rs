@@ -29,7 +29,7 @@ use core::{error::Error, fmt::Debug};
 use execute::{BasicBlockExecutor, BlockAssembler, BlockBuilder};
 use reth_execution_errors::BlockExecutionError;
 use reth_primitives_traits::{
-    BlockTy, HeaderTy, NodePrimitives, ReceiptTy, SealedBlock, SealedHeader, TxTy,
+    BlockTy, HeaderTy, NodePrimitives, ReceiptTy, Recovered, SealedBlock, SealedHeader, TxTy,
 };
 use revm::{database::State, primitives::hardfork::SpecId};
 
@@ -43,9 +43,7 @@ pub use aliases::*;
 #[cfg(feature = "std")]
 mod engine;
 #[cfg(feature = "std")]
-pub use engine::{
-    ConfigureEngineEvm, ConvertTx, ExecutableTxIterator, ExecutableTxTuple, ExecutionReconciliation,
-};
+pub use engine::{ConfigureEngineEvm, ConvertTx, ExecutableTxIterator, ExecutableTxTuple};
 
 #[cfg(feature = "metrics")]
 pub mod metrics;
@@ -58,6 +56,16 @@ pub use alloy_evm::{
     block::{state_changes, system_calls, OnStateHook},
     *,
 };
+
+/// Whether authenticated chain processing applied an explicit post-execution effect.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExecutionReconciliation {
+    /// Local execution is already canonical.
+    #[default]
+    Unchanged,
+    /// Chain-specific processing applied an explicit state or result effect.
+    Reconciled,
+}
 
 /// A complete configuration of EVM for Reth.
 ///
@@ -255,6 +263,48 @@ pub trait ConfigureEvm: Clone + Debug + Send + Sync + Unpin {
         parent: &SealedHeader<HeaderTy<Self::Primitives>>,
         attributes: Self::NextBlockEnvCtx,
     ) -> Result<ExecutionCtxFor<'_, Self>, Self::Error>;
+
+    /// Recovers a stored block transaction using the chain's canonical sender rules.
+    fn recover_block_transaction(
+        &self,
+        transaction: TxTy<Self::Primitives>,
+    ) -> Result<Recovered<TxTy<Self::Primitives>>, BlockExecutionError> {
+        reth_primitives_traits::SignerRecoverable::try_into_recovered(transaction)
+            .map_err(BlockExecutionError::other)
+    }
+
+    /// Reconciles a stored block's locally executed state and result before transitions are merged.
+    ///
+    /// Most chains use the EVM output directly. Chains with authenticated execution sidecars can
+    /// override this hook so canonical re-execution, backfill, and unwind/replay perform the same
+    /// authenticated validation and explicit native effects as Engine payload validation.
+    fn reconcile_block_execution<DB>(
+        &self,
+        _block: &SealedBlock<BlockTy<Self::Primitives>>,
+        _state: &mut State<DB>,
+        _result: &mut reth_execution_types::BlockExecutionResult<ReceiptTy<Self::Primitives>>,
+    ) -> Result<ExecutionReconciliation, BlockExecutionError>
+    where
+        DB: revm::Database,
+    {
+        Ok(ExecutionReconciliation::Unchanged)
+    }
+
+    /// Applies chain-specific execution context to a synthetic RPC transaction.
+    ///
+    /// `transaction_boundary` is zero based and may equal the block's transaction count to
+    /// represent post-block state. `pending` is true only when the resolved state itself is an
+    /// uncommitted pending block; a pending request that falls back to latest resolves with
+    /// `pending = false`.
+    fn apply_rpc_transaction_context(
+        &self,
+        _block: &SealedBlock<BlockTy<Self::Primitives>>,
+        _transaction_boundary: usize,
+        _pending: bool,
+        _tx_env: &mut TxEnvFor<Self>,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
 
     /// Returns a [`EvmFactory::Tx`] from a transaction.
     fn tx_env(&self, transaction: impl IntoTxEnv<TxEnvFor<Self>>) -> TxEnvFor<Self> {

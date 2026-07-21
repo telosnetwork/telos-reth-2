@@ -1,6 +1,6 @@
 //! Telos execution-payload validation.
 
-use alloy_primitives::Address;
+use alloy_primitives::{Address, B256};
 use alloy_rpc_types_engine::{ExecutionData, PayloadError};
 use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_engine_primitives::{EngineApiValidator, PayloadValidator};
@@ -15,7 +15,7 @@ use reth_payload_validator::{cancun, prague, shanghai};
 use reth_primitives_traits::{
     transaction::signed::RecoveryError, Block as _, RecoveredBlock, SealedBlock, SignerRecoverable,
 };
-use reth_telos_rpc_engine_api::{payload::TelosExecutionData, validate_extra_fields};
+use reth_telos_rpc_engine_api::{payload::TelosExecutionData, validate_extra_fields_for_payload};
 use std::sync::Arc;
 
 /// Payload validator for Telos's legacy header representation.
@@ -35,6 +35,19 @@ impl<ChainSpec> TelosEngineValidator<ChainSpec> {
 #[derive(Debug, thiserror::Error)]
 #[error("invalid transaction signature outside the Telos chain-ID-3 compatibility path: {0}")]
 pub(crate) struct TelosSenderError(RecoveryError);
+
+/// A Telos payload attempted to commit a state root that is not part of the canonical header
+/// format.
+#[derive(Debug, thiserror::Error)]
+#[error("canonical Telos payload state root must be EMPTY_ROOT_HASH, got {0}")]
+struct TelosCanonicalStateRootError(B256);
+
+fn ensure_canonical_state_root(root: B256) -> Result<(), TelosCanonicalStateRootError> {
+    if root != alloy_consensus::EMPTY_ROOT_HASH {
+        return Err(TelosCanonicalStateRootError(root))
+    }
+    Ok(())
+}
 
 /// Recovers a sender using Telos's historical chain-ID-3 compatibility rule.
 ///
@@ -58,10 +71,13 @@ fn telos_ensure_well_formed_payload(
     chain_spec: &impl EthereumHardforks,
     data: TelosExecutionData,
 ) -> Result<SealedBlock<Block>, NewPayloadError> {
-    validate_extra_fields(
+    validate_extra_fields_for_payload(
         &data.extra_fields,
         data.inner.payload.transactions().len(),
         data.inner.payload.as_v1().gas_used,
+        data.inner.payload.as_v1().base_fee_per_gas,
+        data.inner.payload.block_hash(),
+        data.inner.parent_hash(),
     )
     .map_err(NewPayloadError::other)?;
 
@@ -69,6 +85,8 @@ fn telos_ensure_well_formed_payload(
     let expected_hash = payload.block_hash();
     let block: Block = payload.try_into_block_with_sidecar(&sidecar)?;
     let alloy_consensus::Block { mut header, body } = block;
+
+    ensure_canonical_state_root(header.state_root).map_err(NewPayloadError::other)?;
 
     // Telos canonical block hashes omit baseFeePerGas even though the companion payload carries
     // it for Engine API compatibility. Recompute and verify that canonical representation rather
@@ -222,6 +240,13 @@ mod tests {
             block_hash: Default::default(),
             transactions: Vec::new(),
         }
+    }
+
+    #[test]
+    fn rejects_noncanonical_real_state_root_before_execution() {
+        let error = ensure_canonical_state_root(B256::repeat_byte(0x44)).unwrap_err();
+        assert!(error.to_string().contains("EMPTY_ROOT_HASH"));
+        ensure_canonical_state_root(alloy_consensus::EMPTY_ROOT_HASH).unwrap();
     }
 
     fn invalid_legacy(

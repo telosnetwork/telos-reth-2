@@ -87,23 +87,19 @@ jobs:
             || { echo "tag version $version does not match telos-reth $package_version" >&2; exit 1; }
 
           if [[ "$publish" == true ]]; then
-            release_count=$(gh api --paginate \
+            matching_releases="${RUNNER_TEMP}/matching-releases.json"
+            gh api --paginate \
               "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-              | jq -s --arg tag "$tag" '[.[][] | select(.tag_name == $tag)] | length')
-            [[ "$release_count" == 0 ]] \
-              || { echo "GitHub release $tag already exists (including drafts); refusing to overwrite it" >&2; exit 1; }
-
-            for image_tag in "$version" "${version}-amd64" "${version}-arm64"; do
-              image_ref="${IMAGE_NAME}:${image_tag}"
-              if manifest_error=$(docker manifest inspect "$image_ref" 2>&1); then
-                echo "container tag $image_ref already exists; refusing to overwrite it" >&2
-                exit 1
-              elif [[ "$manifest_error" != *"manifest unknown"* ]]; then
-                echo "$manifest_error" >&2
-                echo "could not prove that container tag $image_ref is absent" >&2
-                exit 1
-              fi
-            done
+              | jq -s --arg tag "$tag" '[.[][] | select(.tag_name == $tag)]' \
+              > "$matching_releases"
+            release_count=$(jq -r 'length' "$matching_releases")
+            [[ "$release_count" -le 1 ]] \
+              || { echo "multiple GitHub releases exist for $tag" >&2; exit 1; }
+            if [[ "$release_count" == 1 ]]; then
+              [[ "$(jq -r '.[0].draft' "$matching_releases")" == true ]] \
+                || { echo "published GitHub release $tag already exists; refusing to alter it" >&2; exit 1; }
+              echo "resuming the existing draft release for $tag"
+            fi
           fi
 
           source_commit=$(git rev-parse HEAD)
@@ -183,11 +179,27 @@ jobs:
             .
       - name: Check binary identity
         env:
+          PUBLISH: ${{ needs.metadata.outputs.publish }}
           VERSION: ${{ needs.metadata.outputs.version }}
         run: |
+          set -euo pipefail
           binary="release-binary/telos-reth"
           test -x "$binary"
           "$binary" --version | grep -F "$VERSION"
+          build_info=$("$binary" telos-build-info)
+          jq -e '
+            .schema == "telos-reth-build-info/v1" and
+            (.execution_ready | type == "boolean") and
+            (.rpc_replay_ready | type == "boolean")
+          ' <<< "$build_info" >/dev/null
+          if [[ "$PUBLISH" == true ]]; then
+            jq -e '.execution_ready == true' <<< "$build_info" >/dev/null || {
+              echo "refusing to publish a binary with the Telos execution qualification gate closed" >&2
+              exit 1
+            }
+          fi
+          test -x release-binary/telos-checkpoint-bootstrap
+          release-binary/telos-checkpoint-bootstrap --help >/dev/null
       - name: Package deterministic archive
         env:
           SOURCE_DATE_EPOCH: ${{ needs.metadata.outputs.source-date-epoch }}
@@ -203,7 +215,7 @@ jobs:
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          file: release-binary/telos-reth
+          path: release-binary
           format: spdx-json
           output-file: dist/telos-reth-${{ needs.metadata.outputs.version }}-${{ matrix.target }}.spdx.json
           syft-version: v1.48.0
@@ -226,6 +238,7 @@ jobs:
           name: release-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
+          overwrite: true
           retention-days: 7
 
   reproducibility:
@@ -274,18 +287,32 @@ jobs:
       - name: Require a byte-identical rebuild
         env:
           ASSET_ROOT: telos-reth-${{ needs.metadata.outputs.version }}-${{ matrix.target }}
+          SOURCE_DATE_EPOCH: ${{ needs.metadata.outputs.source-date-epoch }}
         run: |
           set -euo pipefail
           (cd release-dist && sha256sum --check "${ASSET_ROOT}.sha256")
+          scripts/release/package-telos.sh \
+            rebuild/telos-reth \
+            "${{ needs.metadata.outputs.version }}" \
+            "${{ matrix.target }}" \
+            "${{ needs.metadata.outputs.source-commit }}" \
+            "${{ needs.metadata.outputs.upstream-release }}" \
+            "${{ needs.metadata.outputs.upstream-commit }}" \
+            rebuilt-dist
+          cmp "release-dist/${ASSET_ROOT}.tar.gz" "rebuilt-dist/${ASSET_ROOT}.tar.gz"
           mkdir expected
           tar -xzf "release-dist/${ASSET_ROOT}.tar.gz" \
             --strip-components=1 \
             -C expected \
-            "${ASSET_ROOT}/telos-reth"
+            "${ASSET_ROOT}/telos-reth" \
+            "${ASSET_ROOT}/telos-checkpoint-bootstrap"
           test -x expected/telos-reth
+          test -x expected/telos-checkpoint-bootstrap
           test -x rebuild/telos-reth
+          test -x rebuild/telos-checkpoint-bootstrap
           cmp expected/telos-reth rebuild/telos-reth
-          sha256sum expected/telos-reth rebuild/telos-reth
+          cmp expected/telos-checkpoint-bootstrap rebuild/telos-checkpoint-bootstrap
+          sha256sum expected/telos-* rebuild/telos-*
 
   container-validation:
     name: validate container / ${{ matrix.arch }}
@@ -332,6 +359,8 @@ jobs:
           driver-opts: image=moby/buildkit:v0.31.2@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
       - name: Build the candidate runtime image locally
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        env:
+          SOURCE_DATE_EPOCH: ${{ needs.metadata.outputs.source-date-epoch }}
         with:
           context: .
           file: Dockerfile.telos
@@ -458,6 +487,7 @@ jobs:
           name: signed-release-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
+          overwrite: true
           retention-days: 7
 
   container:
@@ -526,6 +556,8 @@ jobs:
           driver-opts: image=moby/buildkit:v0.31.2@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
       - name: Build architecture image locally
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        env:
+          SOURCE_DATE_EPOCH: ${{ needs.metadata.outputs.source-date-epoch }}
         with:
           context: .
           file: Dockerfile.telos
@@ -533,7 +565,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           load: true
           push: false
-          tags: ${{ env.IMAGE_NAME }}:${{ needs.metadata.outputs.version }}-${{ matrix.arch }}
+          tags: telos-reth-release:${{ needs.metadata.outputs.version }}-${{ matrix.arch }}
           build-args: |
             SOURCE_COMMIT=${{ needs.metadata.outputs.source-commit }}
             TELOS_VERSION=${{ needs.metadata.outputs.version }}
@@ -547,7 +579,7 @@ jobs:
           VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           set -euo pipefail
-          image_ref="${IMAGE_NAME}:${VERSION}-${ARCH}"
+          image_ref="telos-reth-release:${VERSION}-${ARCH}"
           docker run --rm \
             --network none \
             --read-only \
@@ -563,7 +595,7 @@ jobs:
       - name: Generate architecture image SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          image: docker:${{ env.IMAGE_NAME }}:${{ needs.metadata.outputs.version }}-${{ matrix.arch }}
+          image: docker:telos-reth-release:${{ needs.metadata.outputs.version }}-${{ matrix.arch }}
           format: spdx-json
           output-file: container-${{ matrix.arch }}.spdx.json
           syft-version: v1.48.0
@@ -574,7 +606,7 @@ jobs:
         env:
           TRIVY_IMAGE_SRC: docker
         with:
-          image-ref: ${{ env.IMAGE_NAME }}:${{ needs.metadata.outputs.version }}-${{ matrix.arch }}
+          image-ref: telos-reth-release:${{ needs.metadata.outputs.version }}-${{ matrix.arch }}
           version: v0.72.0
           vuln-type: os,library
           severity: CRITICAL
@@ -586,23 +618,27 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - name: Push the scanned architecture image
+      - name: Push the scanned image under a run-scoped staging tag
         id: image
         env:
           ARCH: ${{ matrix.arch }}
+          SOURCE_COMMIT: ${{ needs.metadata.outputs.source-commit }}
           VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           set -euo pipefail
-          image_ref="${IMAGE_NAME}:${VERSION}-${ARCH}"
-          if manifest_error=$(docker manifest inspect "$image_ref" 2>&1); then
-            echo "container tag $image_ref appeared after release validation; refusing to overwrite it" >&2
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ && "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          local_ref="telos-reth-release:${VERSION}-${ARCH}"
+          staging_ref="${IMAGE_NAME}:staging-${SOURCE_COMMIT}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARCH}"
+          if manifest_error=$(docker manifest inspect "$staging_ref" 2>&1); then
+            echo "run-scoped container tag $staging_ref already exists; refusing to overwrite it" >&2
             exit 1
-          elif [[ "$manifest_error" != *"manifest unknown"* ]]; then
+          elif ! grep -qiE 'manifest unknown|no such manifest|not found' <<< "$manifest_error"; then
             echo "$manifest_error" >&2
-            echo "could not prove that container tag $image_ref is absent immediately before push" >&2
+            echo "could not prove that run-scoped container tag $staging_ref is absent" >&2
             exit 1
           fi
-          docker push "$image_ref" 2>&1 | tee push-output.txt
+          docker tag "$local_ref" "$staging_ref"
+          docker push "$staging_ref" 2>&1 | tee push-output.txt
           digest=$(sed -nE \
             's/^.*digest: (sha256:[0-9a-f]{64}) .*$/\1/p' \
             push-output.txt | tail -n 1)
@@ -634,6 +670,7 @@ jobs:
           name: container-digest-${{ matrix.arch }}
           path: container-digest/ref.txt
           if-no-files-found: error
+          overwrite: true
           retention-days: 7
 
   container-manifest:
@@ -664,12 +701,14 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - name: Publish and validate image index
+      - name: Publish and validate a run-scoped image index
         id: manifest
         env:
+          SOURCE_COMMIT: ${{ needs.metadata.outputs.source-commit }}
           VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           set -euo pipefail
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ && "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
           amd64_ref=$(<container-digests/container-digest-amd64/ref.txt)
           arm64_ref=$(<container-digests/container-digest-arm64/ref.txt)
           ref_pattern='^ghcr\.io/telosnetwork/telos-reth@sha256:[0-9a-f]{64}$'
@@ -677,18 +716,19 @@ jobs:
           [[ "$arm64_ref" =~ $ref_pattern ]] || { echo "invalid arm64 image reference: $arm64_ref" >&2; exit 1; }
           [[ "$amd64_ref" != "$arm64_ref" ]] || { echo "architecture image digests must differ" >&2; exit 1; }
 
-          if manifest_error=$(docker manifest inspect "${IMAGE_NAME}:${VERSION}" 2>&1); then
-            echo "container tag ${IMAGE_NAME}:${VERSION} already exists; refusing to overwrite it" >&2
+          staging_ref="${IMAGE_NAME}:staging-${SOURCE_COMMIT}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if manifest_error=$(docker manifest inspect "$staging_ref" 2>&1); then
+            echo "run-scoped image-index tag $staging_ref already exists; refusing to overwrite it" >&2
             exit 1
-          elif [[ "$manifest_error" != *"manifest unknown"* ]]; then
+          elif ! grep -qiE 'manifest unknown|no such manifest|not found' <<< "$manifest_error"; then
             echo "$manifest_error" >&2
-            echo "could not prove that container tag ${IMAGE_NAME}:${VERSION} is absent" >&2
+            echo "could not prove that run-scoped image-index tag $staging_ref is absent" >&2
             exit 1
           fi
 
           docker buildx imagetools create \
             --metadata-file manifest-metadata.json \
-            --tag "${IMAGE_NAME}:${VERSION}" \
+            --tag "$staging_ref" \
             "$amd64_ref" \
             "$arm64_ref"
           digest=$(jq -er \
@@ -724,6 +764,10 @@ jobs:
     permissions:
       contents: write
       id-token: write
+    outputs:
+      asset-manifest-sha256: ${{ steps.release.outputs.asset_manifest_sha256 }}
+      body-sha256: ${{ steps.release.outputs.body_sha256 }}
+      release-id: ${{ steps.release.outputs.release_id }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -811,6 +855,7 @@ jobs:
             echo "Every archive has an SPDX SBOM, Sigstore bundle, SHA-256 checksum, and GitHub build attestation. See \`docs/telos/release.md\`."
           } > release-notes.md
       - name: Create draft release
+        id: release
         env:
           GH_TOKEN: ${{ github.token }}
           PRERELEASE: ${{ needs.metadata.outputs.prerelease }}
@@ -821,10 +866,200 @@ jobs:
           prerelease_args=()
           [[ "$PRERELEASE" == true ]] && prerelease_args+=(--prerelease)
 
-          gh release create "$TAG" \
-            --verify-tag \
-            --draft \
-            --title "Telos Reth ${VERSION}" \
-            --notes-file release-notes.md \
-            "${prerelease_args[@]}" \
-            release-dist/*
+          release_json="${RUNNER_TEMP}/existing-release.json"
+          release_error="${RUNNER_TEMP}/existing-release.error"
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
+            > "$release_json" 2> "$release_error"; then
+            jq -e \
+              --arg tag "$TAG" \
+              --argjson prerelease "$PRERELEASE" \
+              '.tag_name == $tag and .draft == true and .prerelease == $prerelease' \
+              "$release_json" >/dev/null \
+              || { echo "the existing release is not the expected resumable draft" >&2; exit 1; }
+            gh release edit "$TAG" \
+              --title "Telos Reth ${VERSION}" \
+              --notes-file release-notes.md
+            gh release upload "$TAG" release-dist/* --clobber
+          elif grep -q 'HTTP 404' "$release_error"; then
+            gh release create "$TAG" \
+              --verify-tag \
+              --draft \
+              --title "Telos Reth ${VERSION}" \
+              --notes-file release-notes.md \
+              "${prerelease_args[@]}" \
+              release-dist/*
+          else
+            cat "$release_error" >&2
+            exit 1
+          fi
+
+          final_release_json="${RUNNER_TEMP}/final-release.json"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" > "$final_release_json"
+          jq -e \
+            --arg tag "$TAG" \
+            --arg title "Telos Reth ${VERSION}" \
+            --argjson prerelease "$PRERELEASE" \
+            '.tag_name == $tag and .name == $title and .draft == true and .prerelease == $prerelease' \
+            "$final_release_json" >/dev/null \
+            || { echo "the finalized draft metadata does not match this release" >&2; exit 1; }
+          jq -jer '.body' "$final_release_json" > "${RUNNER_TEMP}/actual-release-notes.md"
+          cmp release-notes.md "${RUNNER_TEMP}/actual-release-notes.md"
+
+          release_id=$(jq -er '.id | select(type == "number")' "$final_release_json")
+          expected_assets="${RUNNER_TEMP}/expected-release-assets"
+          actual_assets="${RUNNER_TEMP}/actual-release-assets"
+          (
+            cd release-dist
+            while IFS= read -r -d '' asset; do
+              asset_sha256=$(sha256sum "$asset" | cut -d ' ' -f 1)
+              printf '%s\tsha256:%s\tuploaded\n' "$asset" "$asset_sha256"
+            done < <(find . -maxdepth 1 -type f -printf '%f\0' | LC_ALL=C sort -z)
+          ) > "$expected_assets"
+          test -s "$expected_assets"
+          gh api --paginate \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100" \
+            --jq '.[] | [.name, .digest, .state] | @tsv' \
+            | LC_ALL=C sort > "$actual_assets"
+          cmp "$expected_assets" "$actual_assets"
+
+          asset_manifest_sha256=$(sha256sum "$expected_assets" | cut -d ' ' -f 1)
+          body_sha256=$(sha256sum release-notes.md | cut -d ' ' -f 1)
+          {
+            echo "asset_manifest_sha256=$asset_manifest_sha256"
+            echo "body_sha256=$body_sha256"
+            echo "release_id=$release_id"
+          } >> "$GITHUB_OUTPUT"
+
+  publish-container-tags:
+    name: publish signed container tags
+    if: needs.metadata.outputs.publish == 'true'
+    needs: [metadata, container-manifest, draft-release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production-release
+    permissions:
+      attestations: read
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: container-digest-*
+          path: container-digests
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          version: v0.35.0
+          driver-opts: image=moby/buildkit:v0.31.2@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
+      - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.0.6
+      - name: Verify signed digests and promote semantic tags
+        env:
+          EXPECTED_ASSET_MANIFEST_SHA256: ${{ needs.draft-release.outputs.asset-manifest-sha256 }}
+          EXPECTED_BODY_SHA256: ${{ needs.draft-release.outputs.body-sha256 }}
+          EXPECTED_RELEASE_ID: ${{ needs.draft-release.outputs.release-id }}
+          GH_TOKEN: ${{ github.token }}
+          INDEX_DIGEST: ${{ needs.container-manifest.outputs.digest }}
+          PRERELEASE: ${{ needs.metadata.outputs.prerelease }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${TAG}"
+          issuer="https://token.actions.githubusercontent.com"
+          ref_pattern='^ghcr\.io/telosnetwork/telos-reth@sha256:[0-9a-f]{64}$'
+
+          [[ "$EXPECTED_RELEASE_ID" =~ ^[0-9]+$ ]]
+          [[ "$EXPECTED_ASSET_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$EXPECTED_BODY_SHA256" =~ ^[0-9a-f]{64}$ ]]
+
+          verify_draft() {
+            local release_json="${RUNNER_TEMP}/draft-release.json"
+            local actual_assets="${RUNNER_TEMP}/actual-release-assets"
+            local actual_body_sha256
+            local actual_asset_manifest_sha256
+
+            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" > "$release_json"
+            jq -e \
+              --arg tag "$TAG" \
+              --arg title "Telos Reth ${VERSION}" \
+              --argjson prerelease "$PRERELEASE" \
+              --argjson release_id "$EXPECTED_RELEASE_ID" \
+              '.id == $release_id and .tag_name == $tag and .name == $title and .draft == true and .prerelease == $prerelease' \
+              "$release_json" >/dev/null \
+              || { echo "the exact draft GitHub release must exist before container tag promotion" >&2; exit 1; }
+            actual_body_sha256=$(jq -jer '.body' "$release_json" | sha256sum | cut -d ' ' -f 1)
+            [[ "$actual_body_sha256" == "$EXPECTED_BODY_SHA256" ]] \
+              || { echo "the draft release notes changed before container tag promotion" >&2; exit 1; }
+
+            gh api --paginate \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/${GITHUB_REPOSITORY}/releases/${EXPECTED_RELEASE_ID}/assets?per_page=100" \
+              --jq '.[] | [.name, .digest, .state] | @tsv' \
+              | LC_ALL=C sort > "$actual_assets"
+            actual_asset_manifest_sha256=$(sha256sum "$actual_assets" | cut -d ' ' -f 1)
+            [[ "$actual_asset_manifest_sha256" == "$EXPECTED_ASSET_MANIFEST_SHA256" ]] \
+              || { echo "the draft release assets changed before container tag promotion" >&2; exit 1; }
+          }
+
+          amd64_ref=$(<container-digests/container-digest-amd64/ref.txt)
+          arm64_ref=$(<container-digests/container-digest-arm64/ref.txt)
+          index_ref="${IMAGE_NAME}@${INDEX_DIGEST}"
+          for ref in "$amd64_ref" "$arm64_ref" "$index_ref"; do
+            [[ "$ref" =~ $ref_pattern ]] || { echo "invalid signed image reference: $ref" >&2; exit 1; }
+            cosign verify \
+              --certificate-identity "$identity" \
+              --certificate-oidc-issuer "$issuer" \
+              "$ref" >/dev/null
+            gh attestation verify "oci://${ref}" --repo "$GITHUB_REPOSITORY" >/dev/null
+          done
+
+          inspect_digest() {
+            docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' \
+              | jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))'
+          }
+
+          promote() {
+            local target_ref=$1
+            local source_ref=$2
+            local expected_digest=${source_ref##*@}
+            local inspect_error="${RUNNER_TEMP}/inspect-error"
+            local actual_digest
+
+            if actual_digest=$(inspect_digest "$target_ref" 2> "$inspect_error"); then
+              [[ "$actual_digest" == "$expected_digest" ]] || {
+                echo "existing tag $target_ref resolves to $actual_digest, expected $expected_digest" >&2
+                exit 1
+              }
+            elif grep -qiE 'manifest unknown|not found' "$inspect_error"; then
+              docker buildx imagetools create \
+                --prefer-index=false \
+                --tag "$target_ref" \
+                "$source_ref"
+            else
+              cat "$inspect_error" >&2
+              echo "could not determine whether $target_ref already exists" >&2
+              exit 1
+            fi
+
+            actual_digest=$(inspect_digest "$target_ref")
+            [[ "$actual_digest" == "$expected_digest" ]] || {
+              echo "promoted tag $target_ref resolves to $actual_digest, expected $expected_digest" >&2
+              exit 1
+            }
+          }
+
+          verify_draft
+          promote "${IMAGE_NAME}:${VERSION}-amd64" "$amd64_ref"
+          verify_draft
+          promote "${IMAGE_NAME}:${VERSION}-arm64" "$arm64_ref"
+          # The multi-platform version tag is last: every digest is signed and attested,
+          # and the draft release is already complete before it becomes discoverable.
+          verify_draft
+          promote "${IMAGE_NAME}:${VERSION}" "$index_ref"

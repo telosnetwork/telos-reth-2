@@ -1,0 +1,80 @@
+[Unit]
+Description=Telos consensus companion (%i)
+Documentation=https://github.com/telosnetwork/telos-reth-2/blob/main/docs/telos/operations.md
+Requires=telos-reth@%i.service
+After=network-online.target telos-reth@%i.service
+Wants=network-online.target
+StartLimitIntervalSec=15min
+StartLimitBurst=3
+ConditionPathIsExecutable=/usr/local/bin/telos-consensus-client
+ConditionPathExists=/etc/telos-reth/%i/consensus.toml
+
+[Service]
+Type=simple
+User=telos-consensus
+Group=telos-consensus
+SupplementaryGroups=telos-reth-config
+UMask=0027
+EnvironmentFile=/etc/telos-reth/%i/node.env
+LoadCredential=jwt.hex:/etc/telos-reth/%i/jwt.hex
+StateDirectory=telos-consensus/%i
+StateDirectoryMode=0750
+RuntimeDirectory=telos-consensus/%i
+RuntimeDirectoryMode=0750
+ExecStartPre=+/usr/local/libexec/telos-reth-consensus-binding \
+    ${CONSENSUS_UNIT} \
+    ${CONSENSUS_BINARY} \
+    ${CONSENSUS_CONFIG} \
+    /var/lib/telos-consensus/%i \
+    ${CHAIN_ID} \
+    ${AUTHRPC_PORT} \
+    ${NODEOS_URL} \
+    ${EXECUTION_ANCHOR_BLOCK_NUMBER} \
+    ${EXECUTION_ANCHOR_BLOCK_HASH} \
+    %i \
+    ${CHECKPOINT_MANIFEST}
+ExecStartPre=/usr/local/libexec/telos-reth-engine-ready %i %d/jwt.hex
+ExecStart=/usr/local/bin/telos-consensus-client --config /etc/telos-reth/%i/consensus.toml
+
+Restart=on-failure
+RestartSec=10s
+TimeoutStartSec=2min
+TimeoutStopSec=5min
+KillSignal=SIGINT
+LimitNOFILE=262144
+TasksMax=8192
+MemoryHigh=4G
+MemoryMax=6G
+MemorySwapMax=0
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadOnlyPaths=/etc/telos-reth
+ReadWritePaths=/var/lib/telos-consensus/%i /run/telos-consensus/%i
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=telos-consensus-%i
+
+[Install]
+WantedBy=multi-user.target

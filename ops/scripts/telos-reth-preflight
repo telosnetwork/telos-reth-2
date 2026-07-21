@@ -15,20 +15,88 @@ binary=/usr/local/bin/telos-reth
 data_dir=/var/lib/telos-reth/${instance}
 
 [[ $instance =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || die "invalid instance name"
+
+# Publication spans two databases and three checkpoint files on potentially different
+# filesystems. A pending durable restore journal fences ordinary starts. The sole exception is the
+# validation start performed by the still-running restore process while it owns the instance lock.
+restore_state_dir=/var/lib/telos-reth-backup/${instance}
+restore_journal=${restore_state_dir}/restore.transaction.json
+restore_lock=${restore_state_dir}/operation.lock
+restore_permit_dir=/run/telos-reth-restore
+restore_permit=${restore_permit_dir}/${instance}.permit
+if [[ -e $restore_journal || -L $restore_journal ]]; then
+    [[ -f $restore_journal && ! -L $restore_journal &&
+       $(realpath -e "$restore_journal") == "$restore_journal" &&
+       $(stat -c '%U:%G %a' "$restore_journal") == 'root:root 600' ]] ||
+        die "restore transaction journal is unsafe"
+    restore_fields=$(jq -er --arg instance "$instance" '
+        select(.schema == "telos-reth-restore-transaction/v1" and .instance == $instance) |
+        [.status, .restore_id, .owner_pid, .owner_start_ticks, .permit_nonce] | @tsv' \
+        "$restore_journal") || die "restore transaction journal is malformed"
+    IFS=$'\t' read -r restore_status restore_id restore_owner_pid restore_owner_start_ticks \
+        restore_permit_nonce <<< "$restore_fields"
+    [[ $restore_status == pending || $restore_status == committed || $restore_status == rolled_back ]] ||
+        die "restore transaction journal has an invalid status"
+    [[ $restore_id =~ ^20[0-9]{6}T[0-9]{6}Z-[1-9][0-9]*$ &&
+       $restore_owner_pid =~ ^[1-9][0-9]*$ &&
+       $restore_owner_start_ticks =~ ^[1-9][0-9]*$ &&
+       $restore_permit_nonce =~ ^[0-9a-f]{32}$ ]] ||
+        die "restore transaction journal has invalid owner identity"
+    if [[ $restore_status == pending ]]; then
+        [[ -d $restore_state_dir && ! -L $restore_state_dir &&
+           $(realpath -e "$restore_state_dir") == "$restore_state_dir" &&
+           $(stat -c '%U:%G %a' "$restore_state_dir") == 'root:root 700' ]] ||
+            die "pending restore state directory is unsafe"
+        [[ -d $restore_permit_dir && ! -L $restore_permit_dir &&
+           $(realpath -e "$restore_permit_dir") == "$restore_permit_dir" &&
+           $(stat -c '%U:%G %a' "$restore_permit_dir") == 'root:root 700' ]] ||
+            die "pending restore forbids startup without its private runtime permit directory"
+        [[ -f $restore_permit && ! -L $restore_permit &&
+           $(realpath -e "$restore_permit") == "$restore_permit" &&
+           $(stat -c '%U:%G %a' "$restore_permit") == 'root:root 600' ]] ||
+            die "pending restore forbids startup without its private runtime permit"
+        expected_permit=${restore_id}:${restore_permit_nonce}:${restore_owner_pid}:${restore_owner_start_ticks}
+        [[ $(wc -l < "$restore_permit") == 1 && $(<"$restore_permit") == "$expected_permit" ]] ||
+            die "pending restore runtime permit does not match its durable journal"
+        [[ -r /proc/${restore_owner_pid}/stat &&
+           $(awk '{print $22}' "/proc/${restore_owner_pid}/stat") == "$restore_owner_start_ticks" ]] ||
+            die "pending restore owner is no longer running"
+        restore_cmdline=$(tr '\0' ' ' < "/proc/${restore_owner_pid}/cmdline") ||
+            die "could not inspect the pending restore owner"
+        [[ $restore_cmdline == *telos-reth-restore* ]] ||
+            die "pending restore owner identity is not the restore tool"
+        [[ -f $restore_lock && ! -L $restore_lock &&
+           $(realpath -e "$restore_lock") == "$restore_lock" &&
+           $(stat -c '%U:%G %a' "$restore_lock") == 'root:root 600' ]] ||
+            die "pending restore lock is unsafe"
+        exec 8<"$restore_lock"
+        if flock -n 8; then
+            flock -u 8
+            die "pending restore owner no longer holds the instance lock"
+        fi
+    fi
+fi
+
 [[ -f $config && ! -L $config ]] || die "$config must be a regular file"
-[[ $(stat -c '%U:%G' "$config") == root:root ]] || die "$config must be owned by root:root"
+[[ $(realpath -e "$config") == "$config" ]] || die "$config must use its canonical absolute path"
+[[ $(stat -c '%U:%G %a' "$(dirname "$config")") == 'root:telos-reth-config 750' ]] ||
+    die "the instance configuration directory must be root:telos-reth-config mode 0750"
+[[ $(stat -c '%U:%G' "$config") == root:telos-reth-config ]] ||
+    die "$config must be owned by root:telos-reth-config"
 config_mode=$(stat -c '%a' "$config")
-(( (8#$config_mode & 8#022) == 0 )) || die "$config must not be group/world writable"
+[[ $config_mode == 440 ]] || die "$config must have mode 0440"
 
 # The file is root-controlled and is consumed by systemd as an EnvironmentFile as well.
 # shellcheck disable=SC1090
 source "$config"
 
 required=(
-    CHAIN CHAIN_ID TELOS_ENDPOINT TELOS_SIGNER_ACCOUNT TELOS_SIGNER_PERMISSION
-    HTTP_PORT HTTP_API RPC_MAX_CONNECTIONS RPC_MAX_REQUEST_SIZE_MB RPC_MAX_RESPONSE_SIZE_MB
-    AUTHRPC_PORT METRICS_PORT P2P_PORT REFERENCE_RPC_URL NODEOS_URL NODEOS_CHAIN_ID
-    CONSENSUS_UNIT CONSENSUS_BINARY CONSENSUS_VERSION CONSENSUS_SHA256 MAX_HEAD_LAG_BLOCKS
+    CHAIN CHAIN_ID CHECKPOINT_MANIFEST CHECKPOINT_MANIFEST_SHA256 CHECKPOINT_AUDIT EXECUTION_ANCHOR
+    EXECUTION_ANCHOR_BLOCK_NUMBER EXECUTION_ANCHOR_BLOCK_HASH
+    TELOS_ENDPOINT
+    HTTP_PORT HTTP_API WS_ENABLED RPC_MAX_CONNECTIONS RPC_MAX_REQUEST_SIZE_MB RPC_MAX_RESPONSE_SIZE_MB
+    AUTHRPC_PORT METRICS_PORT REFERENCE_RPC_URL NODEOS_URL NODEOS_CHAIN_ID
+    CONSENSUS_UNIT CONSENSUS_BINARY CONSENSUS_CONFIG CONSENSUS_VERSION CONSENSUS_SHA256 MAX_HEAD_LAG_BLOCKS
     MAX_FINALIZED_STALL_SECONDS MAX_NODEOS_HEAD_AGE_SECONDS PARITY_DEPTHS BINARY_SHA256
 )
 for name in "${required[@]}"; do
@@ -37,20 +105,84 @@ for name in "${required[@]}"; do
 done
 
 [[ $CHAIN_ID =~ ^[0-9]+$ ]] || die "CHAIN_ID must be decimal"
+[[ $EXECUTION_ANCHOR_BLOCK_NUMBER =~ ^[1-9][0-9]*$ ]] ||
+    die "EXECUTION_ANCHOR_BLOCK_NUMBER must be a nonzero decimal height"
+[[ ${EXECUTION_ANCHOR_BLOCK_HASH,,} =~ ^0x[[:xdigit:]]{64}$ ]] ||
+    die "EXECUTION_ANCHOR_BLOCK_HASH must be a 0x-prefixed 32-byte hash"
 [[ $NODEOS_CHAIN_ID =~ ^[[:xdigit:]]{64}$ ]] || die "NODEOS_CHAIN_ID must be 64 hexadecimal characters"
 case "$CHAIN_ID" in
     40)
-        [[ $CHAIN == telos-mainnet ]] || die "EVM chain ID 40 requires CHAIN=telos-mainnet"
+        expected_genesis_hash=36fe7024b760365e3970b7b403e161811c1e626edd68460272fcdfa276272563
         expected_nodeos_chain_id=4667b205c6838ef70ff7988f6e8257e8be0e1284a2f59699054a018f743b1d11
         ;;
     41)
-        [[ $CHAIN == telos-testnet ]] || die "EVM chain ID 41 requires CHAIN=telos-testnet"
+        expected_genesis_hash=b25034033c9ca7a40e879ddcc29cf69071a22df06688b5fe8cc2d68b4e0528f9
         expected_nodeos_chain_id=1eaa0824707c8c16bd25145493bf062aecddfeb56c736f6ba6397f3195f33c9f
         ;;
     *) die "CHAIN_ID must be 40 (mainnet) or 41 (testnet)" ;;
 esac
 [[ ${NODEOS_CHAIN_ID,,} == "$expected_nodeos_chain_id" ]] ||
     die "NODEOS_CHAIN_ID does not match the canonical native chain for EVM chain ID $CHAIN_ID"
+[[ $CHECKPOINT_MANIFEST == /* && $CHECKPOINT_AUDIT == /* && $EXECUTION_ANCHOR == /* ]] ||
+    die "checkpoint artifact paths must be absolute"
+[[ $CHECKPOINT_MANIFEST != *[[:space:]]* && $CHECKPOINT_AUDIT != *[[:space:]]* && $EXECUTION_ANCHOR != *[[:space:]]* ]] ||
+    die "checkpoint artifact paths must not contain whitespace"
+[[ $CHAIN == "telos-checkpoint:${CHECKPOINT_MANIFEST}" ]] ||
+    die "CHAIN must select the exact CHECKPOINT_MANIFEST with telos-checkpoint:"
+[[ $CHECKPOINT_MANIFEST == "/etc/telos-reth/${instance}/checkpoint.json" ]] ||
+    die "CHECKPOINT_MANIFEST must use the managed instance path"
+checkpoint_base=${CHECKPOINT_MANIFEST%.*}
+[[ $CHECKPOINT_AUDIT == "${checkpoint_base}.audit.json" ]] ||
+    die "CHECKPOINT_AUDIT must be the deterministic sibling of CHECKPOINT_MANIFEST"
+[[ $EXECUTION_ANCHOR == "${checkpoint_base}.anchor.json" ]] ||
+    die "EXECUTION_ANCHOR must be the deterministic sibling of CHECKPOINT_MANIFEST"
+
+for artifact in "$CHECKPOINT_MANIFEST" "$CHECKPOINT_AUDIT" "$EXECUTION_ANCHOR"; do
+    [[ -f $artifact && ! -L $artifact ]] || die "$artifact must be a regular non-symlink file"
+    [[ $(realpath -e "$artifact") == "$artifact" ]] || die "$artifact must use its canonical absolute path"
+    [[ $(stat -c '%U:%G' "$artifact") == root:telos-reth-config ]] ||
+        die "$artifact must be owned by root:telos-reth-config"
+    artifact_mode=$(stat -c '%a' "$artifact")
+    [[ $artifact_mode == 440 ]] || die "$artifact must have mode 0440"
+done
+
+[[ $CHECKPOINT_MANIFEST_SHA256 =~ ^[[:xdigit:]]{64}$ ]] ||
+    die "CHECKPOINT_MANIFEST_SHA256 must be 64 hexadecimal characters"
+actual_checkpoint_manifest_sha256=$(sha256sum "$CHECKPOINT_MANIFEST" | awk '{print $1}')
+[[ ${actual_checkpoint_manifest_sha256,,} == ${CHECKPOINT_MANIFEST_SHA256,,} ]] ||
+    die "checkpoint manifest digest does not match the approved deployment pin"
+
+anchor_hash=${EXECUTION_ANCHOR_BLOCK_HASH,,}
+jq -e --argjson chain_id "$CHAIN_ID" \
+    --arg genesis_hash "0x${expected_genesis_hash}" \
+    --argjson anchor_number "$EXECUTION_ANCHOR_BLOCK_NUMBER" \
+    --arg anchor_hash "$anchor_hash" \
+    '.version == 2 and .canonical_chain.chain_id == $chain_id and
+     (.canonical_chain.genesis_hash | ascii_downcase) == $genesis_hash and
+     .execution_anchor.version == 1 and
+     .execution_anchor.chain.chain_id == $chain_id and
+     (.execution_anchor.chain.genesis_hash | ascii_downcase) == $anchor_hash and
+     .execution_anchor.parent_block_number == $anchor_number and
+     (.execution_anchor.parent_block_hash | ascii_downcase) == $anchor_hash' \
+    "$CHECKPOINT_MANIFEST" >/dev/null || die "checkpoint manifest identity does not match node.env"
+jq -e -s '.[0].execution_anchor == .[1]' \
+    "$CHECKPOINT_MANIFEST" "$EXECUTION_ANCHOR" >/dev/null ||
+    die "execution anchor does not exactly match the checkpoint manifest"
+manifest_sha256=0x$(sha256sum "$CHECKPOINT_MANIFEST" | awk '{print $1}')
+jq -e -s --arg manifest_sha256 "$manifest_sha256" \
+    '.[0].version == 2 and (.[0].manifest_sha256 | ascii_downcase) == $manifest_sha256 and
+     .[0].canonical_chain == .[1].canonical_chain and
+     .[0].execution_anchor == .[1].execution_anchor and
+     .[0].export_metadata_sha256 == .[1].export_metadata_sha256 and
+     .[0].native_anchor_attestation_sha256 == .[1].native_anchor_attestation_sha256 and
+     .[0].native_anchor == .[1].native_anchor and
+     .[0].backup_manifest_sha256 == .[1].backup_manifest_sha256 and
+     .[0].backup_mdbx_sha256 == .[1].backup_mdbx_sha256 and
+     .[0].state_dump_sha256 == .[1].state_dump_sha256 and
+     .[0].computed_state_root == .[1].actual_state_root' \
+    "$CHECKPOINT_AUDIT" "$CHECKPOINT_MANIFEST" >/dev/null ||
+    die "checkpoint completion audit does not exactly match the manifest"
+
 [[ $BINARY_SHA256 =~ ^[[:xdigit:]]{64}$ ]] || die "BINARY_SHA256 must be 64 hexadecimal characters"
 [[ $CONSENSUS_SHA256 =~ ^[[:xdigit:]]{64}$ ]] || die "CONSENSUS_SHA256 must be 64 hexadecimal characters"
 [[ $REFERENCE_RPC_URL == https://* ]] || die "REFERENCE_RPC_URL must use HTTPS"
@@ -70,12 +202,22 @@ actual_nodeos_chain_id=$(
 [[ ${actual_nodeos_chain_id,,} == "$expected_nodeos_chain_id" ]] ||
     die "TELOS_ENDPOINT is connected to the wrong native chain"
 
-for name in HTTP_PORT AUTHRPC_PORT METRICS_PORT P2P_PORT; do
+[[ $HTTP_API == eth,net,web3 ]] || die "HTTP_API must be the production allowlist eth,net,web3"
+[[ $WS_ENABLED == true || $WS_ENABLED == false ]] || die "WS_ENABLED must be true or false"
+for name in HTTP_PORT AUTHRPC_PORT METRICS_PORT; do
     value=${!name}
     [[ $value =~ ^[0-9]+$ ]] && (( value >= 1024 && value <= 65535 )) || die "$name is outside 1024..65535"
 done
 [[ $HTTP_PORT != "$AUTHRPC_PORT" && $HTTP_PORT != "$METRICS_PORT" && $AUTHRPC_PORT != "$METRICS_PORT" ]] ||
     die "HTTP, Engine, and metrics ports must be distinct"
+if [[ $WS_ENABLED == true ]]; then
+    [[ -n ${WS_PORT:-} && $WS_PORT =~ ^[0-9]+$ ]] && (( WS_PORT >= 1024 && WS_PORT <= 65535 )) ||
+        die "WS_PORT is required and must be inside 1024..65535 when WebSocket RPC is enabled"
+    [[ ${WS_API:-} == eth,net,web3 ]] ||
+        die "WS_API must be the production allowlist eth,net,web3 when WebSocket RPC is enabled"
+    [[ $WS_PORT != "$HTTP_PORT" && $WS_PORT != "$AUTHRPC_PORT" && $WS_PORT != "$METRICS_PORT" ]] ||
+        die "WebSocket, HTTP, Engine, and metrics ports must be distinct"
+fi
 
 [[ -x $binary && ! -L $binary ]] || {
     # An atomic release symlink is expected; resolve it before applying ownership checks.
@@ -88,20 +230,27 @@ binary_mode=$(stat -c '%a' "$binary")
 actual_digest=$(sha256sum "$binary" | awk '{print $1}')
 [[ ${actual_digest,,} == ${BINARY_SHA256,,} ]] || die "binary digest does not match the approved release"
 
-[[ -x $CONSENSUS_BINARY && -f $CONSENSUS_BINARY && ! -L $CONSENSUS_BINARY ]] || {
-    CONSENSUS_BINARY=$(readlink -f "$CONSENSUS_BINARY")
-    [[ -x $CONSENSUS_BINARY && -f $CONSENSUS_BINARY ]] || die "consensus binary is unavailable"
-}
-[[ $(stat -c '%U' "$CONSENSUS_BINARY") == root ]] || die "$CONSENSUS_BINARY must be owned by root"
-consensus_mode=$(stat -c '%a' "$CONSENSUS_BINARY")
-(( (8#$consensus_mode & 8#022) == 0 )) || die "$CONSENSUS_BINARY must not be group/world writable"
-actual_consensus_digest=$(sha256sum "$CONSENSUS_BINARY" | awk '{print $1}')
+resolved_consensus_binary=$(readlink -f "$CONSENSUS_BINARY")
+[[ -x $resolved_consensus_binary && -f $resolved_consensus_binary ]] || die "consensus binary is unavailable"
+[[ $(stat -c '%U' "$resolved_consensus_binary") == root ]] ||
+    die "$resolved_consensus_binary must be owned by root"
+consensus_mode=$(stat -c '%a' "$resolved_consensus_binary")
+(( (8#$consensus_mode & 8#022) == 0 )) ||
+    die "$resolved_consensus_binary must not be group/world writable"
+actual_consensus_digest=$(sha256sum "$resolved_consensus_binary" | awk '{print $1}')
 [[ ${actual_consensus_digest,,} == ${CONSENSUS_SHA256,,} ]] || die "consensus binary digest is not approved"
-actual_consensus_version=$($CONSENSUS_BINARY --version | head -n 1)
+actual_consensus_version=$($resolved_consensus_binary --version | head -n 1)
 [[ $actual_consensus_version == "$CONSENSUS_VERSION" ]] ||
     die "consensus version mismatch: expected '$CONSENSUS_VERSION', got '$actual_consensus_version'"
 
+/usr/local/libexec/telos-reth-consensus-binding \
+    "$CONSENSUS_UNIT" "$CONSENSUS_BINARY" "$CONSENSUS_CONFIG" \
+    "/var/lib/telos-consensus/${instance}" "$CHAIN_ID" "$AUTHRPC_PORT" "$NODEOS_URL" \
+    "$EXECUTION_ANCHOR_BLOCK_NUMBER" "$EXECUTION_ANCHOR_BLOCK_HASH" "$instance" \
+    "$CHECKPOINT_MANIFEST"
+
 [[ -d $data_dir && ! -L $data_dir ]] || die "$data_dir must be a directory"
+[[ $(realpath -e "$data_dir") == "$data_dir" ]] || die "$data_dir must use its canonical path"
 [[ $(stat -c '%U:%G' "$data_dir") == telos-reth:telos-reth ]] || die "$data_dir must be owned by telos-reth:telos-reth"
 
 [[ -f $jwt_file && -r $jwt_file ]] || die "JWT systemd credential is unavailable"
@@ -110,6 +259,26 @@ jwt=$(tr -d '\r\n' < "$jwt_file")
 
 [[ -f $signer_file && -r $signer_file ]] || die "signer systemd credential is unavailable"
 signer=$(tr -d '\r\n' < "$signer_file")
-[[ -n $signer && ${#signer} -le 256 && $signer != *[[:space:]]* ]] || die "signer credential is malformed"
+[[ $signer == disabled ]] && signer=
+forwarder_fields=0
+if [[ -n ${TELOS_SIGNER_ACCOUNT:-} ]]; then
+    ((forwarder_fields += 1))
+fi
+if [[ -n ${TELOS_SIGNER_PERMISSION:-} ]]; then
+    ((forwarder_fields += 1))
+fi
+if [[ -n $signer ]]; then
+    ((forwarder_fields += 1))
+fi
+case "$forwarder_fields" in
+    0) ;;
+    3)
+        [[ $TELOS_SIGNER_ACCOUNT != REPLACE_* && $TELOS_SIGNER_PERMISSION != REPLACE_* ]] ||
+            die "transaction-forwarder identity still contains a placeholder"
+        [[ ${#signer} -le 256 && $signer != *[[:space:]]* ]] || die "signer credential is malformed"
+        ;;
+    *) die "transaction forwarding requires signer account, permission, and credential together" ;;
+esac
+unset signer
 
 exec "$binary" --version >/dev/null

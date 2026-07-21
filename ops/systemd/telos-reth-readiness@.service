@@ -8,9 +8,24 @@ Wants=network-online.target
 Type=oneshot
 User=telos-monitor
 Group=telos-monitor
+SupplementaryGroups=telos-reth-config
 UMask=0077
 EnvironmentFile=/etc/telos-reth/%i/node.env
 LoadCredential=jwt.hex:/etc/telos-reth/%i/jwt.hex
+StateDirectory=telos-reth-health/%i
+StateDirectoryMode=0700
+ExecStartPre=+/usr/local/libexec/telos-reth-consensus-binding \
+    ${CONSENSUS_UNIT} \
+    ${CONSENSUS_BINARY} \
+    ${CONSENSUS_CONFIG} \
+    /var/lib/telos-consensus/%i \
+    ${CHAIN_ID} \
+    ${AUTHRPC_PORT} \
+    ${NODEOS_URL} \
+    ${EXECUTION_ANCHOR_BLOCK_NUMBER} \
+    ${EXECUTION_ANCHOR_BLOCK_HASH} \
+    %i \
+    ${CHECKPOINT_MANIFEST}
 ExecStart=/usr/local/libexec/telos-reth-readiness %i %d/jwt.hex
 TimeoutStartSec=25s
 MemoryMax=192M
@@ -37,7 +52,7 @@ RemoveIPC=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 ReadOnlyPaths=/etc/telos-reth
-ReadWritePaths=/var/lib/telos-reth-health
+ReadWritePaths=/var/lib/telos-reth-health/%i /var/lib/telos-reth-health/metrics
 
 [Install]
 WantedBy=multi-user.target

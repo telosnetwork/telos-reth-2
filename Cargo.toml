@@ -528,6 +528,7 @@ ripemd = { version = "0.1", default-features = false, features = ["std"] }
 thread-priority = "3.0.0"
 rustc-hash = { version = "2.0", default-features = false }
 schnellru = "0.2"
+zeroize = { version = "1.8", features = ["derive"] }
 serde = { version = "1.0", default-features = false }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 serde_with = { version = "3", default-features = false, features = ["macros"] }

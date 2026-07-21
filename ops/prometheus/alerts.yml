@@ -121,14 +121,22 @@ groups:
           summary: "Telos Reth {{ $labels.network }} remote backup is overdue"
           description: "No complete execution/consensus recovery point reached off-host restic storage in eight hours."
 
-      - alert: TelosRethRemoteVerificationOverdue
-        expr: time() - telos_reth_snapshot_last_remote_verified_timestamp_seconds > 28800
+      - alert: TelosRethRemoteDataVerificationOverdue
+        expr: |
+          (time() - telos_reth_snapshot_last_data_verified_timestamp_seconds > 28800)
+          or on(network)
+          (
+            label_replace(
+              node_systemd_unit_state{name=~"telos-reth-snapshot@.+\\.timer",state="active"} == 1,
+              "network", "$1", "name", "telos-reth-snapshot@(.+)\\.timer"
+            ) unless on(network) telos_reth_snapshot_last_data_verified_timestamp_seconds
+          )
         for: 15m
         labels:
           severity: critical
         annotations:
-          summary: "Telos Reth {{ $labels.network }} remote backup verification is overdue"
-          description: "Remote snapshot metadata has not been read back in eight hours."
+          summary: "Telos Reth {{ $labels.network }} remote backup data verification is overdue"
+          description: "No authenticated subset of remote restic pack data has been read successfully in eight hours."
 
   - name: telos-reth-host
     interval: 30s

@@ -24,6 +24,16 @@ engine_curl_config=${state_dir}/engine-curl.conf
     exit 2
 }
 mkdir -p "$state_dir" "$metrics_dir"
+[[ -d $state_dir && ! -L $state_dir && $(realpath -e "$state_dir") == "$state_dir" &&
+   $(stat -c '%U:%G %a' "$state_dir") == 'telos-monitor:telos-monitor 700' ]] || {
+    echo "unsafe readiness state directory" >&2
+    exit 1
+}
+[[ -d $metrics_dir && ! -L $metrics_dir && $(realpath -e "$metrics_dir") == "$metrics_dir" &&
+   $(stat -c '%U:%G' "$metrics_dir") == telos-monitor:telos-monitor ]] || {
+    echo "unsafe readiness metrics directory" >&2
+    exit 1
+}
 exec 9>"$lock_file"
 flock -w 10 9 || {
     echo "telos-reth readiness [$instance]: another check did not finish within 10s" >&2
@@ -116,16 +126,19 @@ die() {
     exit 1
 }
 
-[[ -f $config ]] || die "missing $config"
-# systemd reads the root-owned EnvironmentFile and passes its values to this unprivileged process.
-# Sourcing keeps direct root diagnostics convenient without making the configuration world-readable.
-if [[ -r $config ]]; then
-    # shellcheck disable=SC1090
-    source "$config"
-fi
-for name in CHAIN_ID HTTP_PORT AUTHRPC_PORT REFERENCE_RPC_URL NODEOS_URL NODEOS_CHAIN_ID \
-    CONSENSUS_UNIT CONSENSUS_BINARY CONSENSUS_VERSION MAX_HEAD_LAG_BLOCKS MAX_FINALIZED_STALL_SECONDS \
-    MAX_NODEOS_HEAD_AGE_SECONDS PARITY_DEPTHS; do
+[[ -f $config && ! -L $config && -r $config ]] || die "missing or unreadable $config"
+[[ $(realpath -e "$config") == "$config" ]] || die "$config must use its canonical path"
+[[ $(stat -c '%U:%G %a' "$(dirname "$config")") == 'root:telos-reth-config 750' ]] ||
+    die "the instance configuration directory must be root:telos-reth-config mode 0750"
+[[ $(stat -c '%U:%G' "$config") == root:telos-reth-config && $(stat -c '%a' "$config") == 440 ]] ||
+    die "$config must be root:telos-reth-config mode 0440"
+# shellcheck disable=SC1090
+source "$config"
+for name in CHAIN_ID CHECKPOINT_MANIFEST CHECKPOINT_MANIFEST_SHA256 HTTP_PORT AUTHRPC_PORT \
+    REFERENCE_RPC_URL TELOS_ENDPOINT NODEOS_URL NODEOS_CHAIN_ID CONSENSUS_UNIT CONSENSUS_BINARY \
+    CONSENSUS_CONFIG CONSENSUS_VERSION CONSENSUS_SHA256 MAX_HEAD_LAG_BLOCKS \
+    MAX_FINALIZED_STALL_SECONDS MAX_NODEOS_HEAD_AGE_SECONDS PARITY_DEPTHS \
+    EXECUTION_ANCHOR_BLOCK_NUMBER EXECUTION_ANCHOR_BLOCK_HASH; do
     [[ -n ${!name:-} ]] || die "$name is not configured"
 done
 
@@ -171,8 +184,36 @@ PY
 stage=service
 systemctl is-active --quiet "telos-reth@${instance}.service" || die "execution service is not active"
 systemctl is-active --quiet "$CONSENSUS_UNIT" || die "consensus service is not active"
+[[ $CONSENSUS_BINARY == /usr/local/bin/telos-consensus-client ]] ||
+    die "consensus binary must use the managed release link"
+[[ ${TELOS_ENDPOINT%/} == "${NODEOS_URL%/}" ]] ||
+    die "TELOS_ENDPOINT and NODEOS_URL do not identify the same native endpoint"
+[[ $CHECKPOINT_MANIFEST == /* && -f $CHECKPOINT_MANIFEST && ! -L $CHECKPOINT_MANIFEST ]] ||
+    die "checkpoint manifest is not a regular absolute file"
+[[ $(stat -c '%U:%G %a' "$CHECKPOINT_MANIFEST") == 'root:telos-reth-config 440' ]] ||
+    die "checkpoint manifest ownership or mode changed"
+[[ $CHECKPOINT_MANIFEST_SHA256 =~ ^[[:xdigit:]]{64}$ ]] ||
+    die "checkpoint manifest deployment pin is malformed"
+actual_checkpoint_manifest_sha256=$(sha256sum "$CHECKPOINT_MANIFEST" | awk '{print $1}')
+[[ ${actual_checkpoint_manifest_sha256,,} == ${CHECKPOINT_MANIFEST_SHA256,,} ]] ||
+    die "checkpoint manifest digest differs from the approved deployment"
+[[ $CONSENSUS_SHA256 =~ ^[[:xdigit:]]{64}$ ]] || die "consensus digest pin is malformed"
+consensus_binary=$(readlink -f "$CONSENSUS_BINARY")
+[[ -x $consensus_binary && -f $consensus_binary ]] || die "consensus binary is unavailable"
+[[ $(stat -c '%U' "$consensus_binary") == root ]] || die "consensus binary is not root-owned"
+consensus_binary_mode=$(stat -c '%a' "$consensus_binary")
+(( (8#$consensus_binary_mode & 8#022) == 0 )) ||
+    die "consensus binary is group/world writable"
+actual_consensus_sha256=$(sha256sum "$consensus_binary" | awk '{print $1}')
+[[ ${actual_consensus_sha256,,} == ${CONSENSUS_SHA256,,} ]] ||
+    die "running consensus binary digest is not the approved digest"
 actual_consensus_version=$($CONSENSUS_BINARY --version | head -n 1) || die "consensus binary version probe failed"
 [[ $actual_consensus_version == "$CONSENSUS_VERSION" ]] || die "consensus companion version is not pinned version"
+/usr/local/libexec/telos-reth-consensus-binding \
+    "$CONSENSUS_UNIT" "$CONSENSUS_BINARY" "$CONSENSUS_CONFIG" \
+    "/var/lib/telos-consensus/${instance}" "$CHAIN_ID" "$AUTHRPC_PORT" "$NODEOS_URL" \
+    "$EXECUTION_ANCHOR_BLOCK_NUMBER" "$EXECUTION_ANCHOR_BLOCK_HASH" "$instance" \
+    "$CHECKPOINT_MANIFEST"
 companion_compatible=1
 
 stage=engine_auth
@@ -198,9 +239,12 @@ PY
 printf 'header = "Authorization: Bearer %s"\n' "$jwt_token" > "$engine_curl_config"
 chmod 0600 "$engine_curl_config"
 engine_url=http://127.0.0.1:${AUTHRPC_PORT}
-capabilities=$(rpc_call "$engine_url" engine_exchangeCapabilities '[[]]' "$engine_curl_config") ||
+capabilities=$(rpc_call "$engine_url" engine_exchangeCapabilities \
+    '[["engine_forkchoiceUpdatedV1","engine_newPayloadV1"]]' "$engine_curl_config") ||
     die "authenticated Engine API probe failed"
-jq -e 'type == "array"' <<< "$capabilities" >/dev/null || die "Engine capabilities response is malformed"
+jq -e 'type == "array" and length == 2 and
+       (sort == ["engine_forkchoiceUpdatedV1","engine_newPayloadV1"])' \
+    <<< "$capabilities" >/dev/null || die "Engine capabilities are not the exact Telos V1 surface"
 engine_authenticated=1
 unset jwt_token
 
@@ -212,6 +256,20 @@ reference_chain=$(hex_to_decimal "$(jq -r . <<< "$reference_chain_hex")") || die
 [[ $local_chain == "$CHAIN_ID" && $reference_chain == "$CHAIN_ID" ]] ||
     die "chain ID mismatch (configured=$CHAIN_ID local=$local_chain reference=$reference_chain)"
 chain_id_match=1
+
+stage=anchor
+[[ $EXECUTION_ANCHOR_BLOCK_NUMBER =~ ^[1-9][0-9]*$ ]] || die "configured anchor height is malformed"
+[[ ${EXECUTION_ANCHOR_BLOCK_HASH,,} =~ ^0x[[:xdigit:]]{64}$ ]] || die "configured anchor hash is malformed"
+anchor_height_hex=$(printf '0x%x' "$EXECUTION_ANCHOR_BLOCK_NUMBER")
+local_anchor=$(rpc_call "http://127.0.0.1:${HTTP_PORT}" eth_getBlockByNumber \
+    "[\"${anchor_height_hex}\",false]") || die "local execution anchor query failed"
+reference_anchor=$(rpc_call "$REFERENCE_RPC_URL" eth_getBlockByNumber \
+    "[\"${anchor_height_hex}\",false]") || die "reference execution anchor query failed"
+local_anchor_hash=$(jq -er '.hash' <<< "$local_anchor") || die "local execution anchor is unavailable"
+reference_anchor_hash=$(jq -er '.hash' <<< "$reference_anchor") || die "reference execution anchor is unavailable"
+[[ ${local_anchor_hash,,} == ${EXECUTION_ANCHOR_BLOCK_HASH,,} &&
+   ${reference_anchor_hash,,} == ${EXECUTION_ANCHOR_BLOCK_HASH,,} ]] ||
+    die "local, reference, and configured execution anchors do not match"
 
 stage=nodeos
 nodeos_response=$(mktemp "${state_dir}/nodeos.XXXXXX")
@@ -256,6 +314,8 @@ finalized_lag=$((reference_finalized_number - local_finalized_number))
 
 if [[ -r $progress_file ]]; then
     read -r previous_height previous_change < "$progress_file" || die "progress state is malformed"
+    [[ $previous_height =~ ^[0-9]+$ && $previous_change =~ ^[0-9]+$ ]] ||
+        die "progress state is malformed"
 else
     previous_height=-1
     previous_change=$now
@@ -277,7 +337,8 @@ IFS=',' read -r -a depths <<< "$PARITY_DEPTHS"
 for depth in "${depths[@]}"; do
     [[ $depth =~ ^[0-9]+$ ]] || die "invalid parity depth: $depth"
     height=$((common_height - depth))
-    (( height >= 0 )) || die "not enough finalized history for parity depth $depth"
+    (( height >= EXECUTION_ANCHOR_BLOCK_NUMBER )) ||
+        die "not enough post-anchor finalized history for parity depth $depth"
     height_hex=$(printf '0x%x' "$height")
     local_block=$(rpc_call "http://127.0.0.1:${HTTP_PORT}" eth_getBlockByNumber "[\"${height_hex}\",false]") ||
         die "local parity query failed at block $height"

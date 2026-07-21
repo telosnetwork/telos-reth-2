@@ -12,38 +12,21 @@ ConditionPathExists=/etc/telos-reth/%i/node.env
 Type=simple
 User=telos-reth
 Group=telos-reth
+SupplementaryGroups=telos-reth-config
 UMask=0027
 EnvironmentFile=/etc/telos-reth/%i/node.env
 LoadCredential=jwt.hex:/etc/telos-reth/%i/jwt.hex
 LoadCredential=signer.key:/etc/telos-reth/%i/signer.key
+# A non-secret disabled marker makes transaction forwarding explicitly optional. Preflight rejects
+# partial configurations, and a real LoadCredential value takes precedence over this fallback.
+SetCredential=signer.key:disabled
 StateDirectory=telos-reth/%i
 StateDirectoryMode=0750
 RuntimeDirectory=telos-reth/%i
 RuntimeDirectoryMode=0750
 
 ExecStartPre=+/usr/local/libexec/telos-reth-preflight %i %d/jwt.hex %d/signer.key
-ExecStart=/usr/local/bin/telos-reth node \
-    --chain ${CHAIN} \
-    --datadir /var/lib/telos-reth/%i \
-    --authrpc.addr 127.0.0.1 \
-    --authrpc.port ${AUTHRPC_PORT} \
-    --authrpc.jwtsecret %d/jwt.hex \
-    --http \
-    --http.addr 127.0.0.1 \
-    --http.port ${HTTP_PORT} \
-    --http.api ${HTTP_API} \
-    --ipcdisable \
-    --rpc.max-connections ${RPC_MAX_CONNECTIONS} \
-    --rpc.max-request-size ${RPC_MAX_REQUEST_SIZE_MB} \
-    --rpc.max-response-size ${RPC_MAX_RESPONSE_SIZE_MB} \
-    --metrics 127.0.0.1:${METRICS_PORT} \
-    --addr 0.0.0.0 \
-    --port ${P2P_PORT} \
-    --discovery.port ${P2P_PORT} \
-    --telos.endpoint ${TELOS_ENDPOINT} \
-    --telos.signer-account ${TELOS_SIGNER_ACCOUNT} \
-    --telos.signer-permission ${TELOS_SIGNER_PERMISSION} \
-    --telos.signer-key-file %d/signer.key
+ExecStart=/usr/local/libexec/telos-reth-run %i %d/jwt.hex %d/signer.key
 
 Restart=on-failure
 RestartSec=10s

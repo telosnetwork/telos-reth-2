@@ -143,7 +143,7 @@ use reth_payload_primitives::{
 };
 use reth_primitives_traits::{
     AlloyBlockHeader, BlockBody, BlockTy, FastInstant as Instant, GotExpected, NodePrimitives,
-    RecoveredBlock, SealedBlock, SealedHeader, SignerRecoverable,
+    RecoveredBlock, SealedBlock, SealedHeader,
 };
 use reth_provider::{
     providers::{OverlayBuilder, OverlayStateProviderFactory},
@@ -395,7 +395,9 @@ where
     {
         match input {
             BlockOrPayload::Payload(payload) => Ok(self.evm_config.evm_env_for_payload(payload)?),
-            BlockOrPayload::Block(block) => Ok(self.evm_config.evm_env(block.header())?),
+            BlockOrPayload::Block(block) => {
+                Ok(self.evm_config.evm_env_for_engine_block(block.header())?)
+            }
         }
     }
 
@@ -418,7 +420,8 @@ where
             }
             BlockOrPayload::Block(block) => {
                 let txs = block.body().clone_transactions();
-                let convert = |tx: N::SignedTx| tx.try_into_recovered();
+                let evm_config = self.evm_config.clone();
+                let convert = move |tx: N::SignedTx| evm_config.recover_block_transaction(tx);
                 Either::Right((txs, convert))
             }
         })
@@ -435,7 +438,7 @@ where
     {
         match input {
             BlockOrPayload::Payload(payload) => Ok(self.evm_config.context_for_payload(payload)?),
-            BlockOrPayload::Block(block) => Ok(self.evm_config.context_for_block(block)?),
+            BlockOrPayload::Block(block) => Ok(self.evm_config.context_for_engine_block(block)?),
         }
     }
 
@@ -1073,10 +1076,11 @@ where
             BlockOrPayload::Payload(payload) => {
                 self.evm_config.reconcile_payload_execution(payload, evm.into_db(), &mut result)?
             }
-            BlockOrPayload::Block(_) => {
-                let _ = evm.into_db();
-                ExecutionReconciliation::Unchanged
-            }
+            BlockOrPayload::Block(block) => self.evm_config.reconcile_engine_block_execution(
+                block,
+                evm.into_db(),
+                &mut result,
+            )?,
         };
         self.metrics.record_post_execution(post_exec_start.elapsed());
 
@@ -1293,7 +1297,6 @@ where
                     executor.evm_mut().db_mut(),
                 )?;
             }
-
             let tx_start = Instant::now();
             executor.execute_transaction(tx)?;
             self.metrics.record_transaction_execution(tx_start.elapsed());

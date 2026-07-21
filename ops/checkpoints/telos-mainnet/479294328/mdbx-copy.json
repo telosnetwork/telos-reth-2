@@ -1,0 +1,20 @@
+{
+  "backup_db": "/telos/telos-reth-v2-bootstrap/mainnet-copy-20260721-1",
+  "chain": "telos-mainnet",
+  "copy_method": "libmdbx-mdbx_copy-compact",
+  "created_at_utc": "2026-07-21T20:37:02Z",
+  "legacy_binary_sha256": "0xff643bf2f3bf78c07801c0df2727d0cc64267a2ad9fe3b18e03ea3f01db12d16",
+  "legacy_binary_version": "reth Version: 1.0.8-dev",
+  "legacy_chain": "tevmmainnet",
+  "mdbx_check_binary_sha256": "0x8d31e6a0a7bfb833b5d3613491f194aa0d5d4241ee43e6cb43656cd3bd190ca4",
+  "mdbx_check_log": "/telos/telos-reth-v2-bootstrap/mainnet-copy-20260721-1/mdbx-check.log",
+  "mdbx_check_log_sha256": "0x6ef16345ca55cb093155d23183682b68c284b0cf2ba6f73017a15ca20d3f1a1e",
+  "mdbx_copy_binary_sha256": "0xf8e53dbdd1a97f1fa7048a15f2a09857db6f6f9c517260e8f3b3557e26eca987",
+  "mdbx_copy_binary_version": "mdbx_copy version 0.12.10.52",
+  "mdbx_sha256": "0xefc2282d911830402e77773e036130411176de8faa3c3f8c0e655268d632bfa6",
+  "mdbx_size": 55834574848,
+  "source_datadir": "/telos/telos-reth-data",
+  "source_db": "/telos/telos-reth-data/db",
+  "verification": "mdbx_chk-ok",
+  "version": 2
+}

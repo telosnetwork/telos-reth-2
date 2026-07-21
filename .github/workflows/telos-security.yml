@@ -71,7 +71,10 @@ jobs:
         working-directory: docs/vocs
         run: |
           bun install --frozen-lockfile --ignore-scripts
-          bun audit
+          # GHSA-frvp-7c67-39w9 is a Windows-only serve-static traversal in the nested
+          # @modelcontextprotocol/sdk Hono adapter. Vocs does not import or bundle that adapter,
+          # and this Linux static build serves no files through it. No patched 1.x release exists.
+          bun audit --ignore GHSA-frvp-7c67-39w9
 
   security-success:
     name: telos / security success

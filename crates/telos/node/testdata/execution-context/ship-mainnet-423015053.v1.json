@@ -1,0 +1,178 @@
+{
+  "schema": "telos-reth/ship-execution-context-golden/v1",
+  "captured_at": "2026-07-21T18:47:06Z",
+  "data_classification": "operator-authenticated-no-secret",
+  "network": {
+    "name": "mainnet",
+    "evm_chain_id": 40,
+    "native_chain_id": "4667b205c6838ef70ff7988f6e8257e8be0e1284a2f59699054a018f743b1d11",
+    "native_to_evm_block_delta": 36
+  },
+  "capture": {
+    "source": "operator-controlled rpc11 node reached through its preconfigured SSH host-key-verified alias",
+    "nodeos_full_version": "v1.2.2-fcb9f5fc627619a8b06cd6b871c462b1d70d3aa4",
+    "access_mode": "read-only direct extraction from indexed block-log and state-history archive byte ranges",
+    "host_mutations": false,
+    "native_block_number": 423015053,
+    "native_block_id": "1936b28d33012e5e4352364ad163acc26ff5f896ef1a0dc71e12255aaa7fb05c",
+    "note": "The running SHIP catalog begins at block 460000001. The older partition remained in the node's read-only archive; the official little-endian index entries selected the exact byte ranges retained below."
+  },
+  "archive_records": {
+    "signed_block": {
+      "log_file": "blocks-421669844-430000000.log",
+      "index_file": "blocks-421669844-430000000.index",
+      "index_entry_offset": 10761672,
+      "record_offset": 345214488,
+      "next_record_offset": 345215476,
+      "record_size": 988,
+      "record_sha256": "2cb2dde9453dfff8d99740a2167c593843a44f36e18788ced0b43483f4a2d7b9",
+      "signed_block_size": 980,
+      "signed_block_sha256": "b450b395aae0a599d915c36a9ad5ea4204128b2dfb1d3ce4e7220fd263a1773d",
+      "trailing_record_offset": 345214488,
+      "record_base64": "NJ+JYBCMO+YaTKPK8AAZNrKMfCio/6u41jhgFpqISAiV21933cB7jQrzC31oXMgUsZf1mpDh1pntZbJvMH8qoPHhLhAcKPOJ4rf3kZQoP5DS+WGB8S/aDa0FqiWGLwUOkOWEomaqxarRJ0r1lW0jGwAAAAAAIGpLgZ+eE5K41mWBr8Juyj6B+ueECSfgCDd3RgIzn6v3U54pQjBvpa6D+Ribcdv4ADvWf0bWpERIcLW15U/D/2EEAAQBAAAdAQEAHEj2isf7a0aVJOlwzgAAiohfcLU5qrwPkbz68JjI/nfucOu43WV2I1V+WGRCUIBndXyW7KCuOzwMah/e1T8ehOQBCXicYwAAAAEAAbgBeJwBrQBS/3MTsmg8sclnpcsAAAAAAQAAkFsB6jBVAAAAAAAAuLkBAAAAQG4FUL0AAAAAAABQvXsAAJBbAeowVXD4boJjWIYExbTUQRKCUgiUGniDEhKF3+CPuJdj0ITVx5Ztz5KHG3I6O9dMW4AcoOAMOAnidBf6FR0vFwgZs/lWIAGcNyQzk8nnFT422duqoEA5zzfIVYiZ+xLJ5D/A6Njb4cX1lk+N8DmmopA0qsxJAAAAvyJF9wDfAAAAHQEBABteJdKAp138bNliqdY+K6u6dbwYj4nUmLVI9r3dF1Q9SHFek3Fdm3Lpgo2bMsURzw4MnEpCMbQoUOXwKcrqrYw1AQl4nGMAAAABAAG4AXicAa0AUv9zE7JoPLHJZ6XLAAAAAAEAAJBbAeowVQAAAAAAALi5AQAAAEBuBVC9AAAAAAAAUL17AACQWwHqMFVw+G6CX22GBMW01EESglIIlO+oHYXBpDnix555f87h796FJcIGhwzdlZlthdyAG6COrHQ3kzwjpJJFtll9muqfuofWq5M0RKUIaoZr9UywB6Bp0UkTNFw+rOSgiRcvEXovJLAJxGTc+t8xMjS9VYx+bQAAAOnCRm0AogEAAAwBAQAfXcVnq439iaGosgsyZX7waXW7swfNtZaZipSs9xa5MHQth2yJ8WaJ0fS7+Ygm4ytO1iCl/hFSeI99R6wGd34xUwAAMjYTsmg8sclnpcsAAAAAAQAAkFsB6jBVALBCV1OsLk0BAAAAQG4FUL0AAAAAqO0yMgAAAMYAAAAMAQEAHz5bpk2oKVhyIUFXgyY8y1umctzA052B814FxvPFa0FgPouzTtscMb5mQSbjESyy4X7ic3VH8s0gc1tyesRolm4AADIyE7JogLLPzq8wAAAAAAEQQs5Y5VqNsYDTNVzdO/OtARBCzljlWo2xAAAAAEzqMjIAAAAYjpMUAAAAAA=="
+    },
+    "traces": {
+      "log_file": "trace_history-421669844-430000000.log",
+      "index_file": "trace_history-421669844-430000000.index",
+      "index_entry_offset": 10761672,
+      "record_offset": 588289774,
+      "next_record_offset": 588292420,
+      "record_size": 2646,
+      "record_sha256": "d92ba7b62c91ceb4dac4db5fa883121dd23c09791113770c0a9d940432346737",
+      "ship_magic_bytes": "0000000000505dc3",
+      "header_block_id": "1936b28d33012e5e4352364ad163acc26ff5f896ef1a0dc71e12255aaa7fb05c",
+      "compressed_payload_size": 2590,
+      "compressed_payload_sha256": "a99f532a635d3dae94d9381df216bbe321d1b7aa240472b3b156204ebb2fd51b",
+      "compression_mode": 1,
+      "decoded_size": 6399,
+      "decoded_sha256": "7bbcd689c7371b4e58fd59ba5a55e31d23bd8efdd522adc3755a32625333ae9c",
+      "trailing_record_offset": 588289774,
+      "record_base64": "AAAAAABQXcMZNrKNMwEuXkNSNkrRY6zCb/X4lu8aDcceEiVaqn+wXB4KAAAAAAAAAQAAAP8YAAAAAAAAeJzVl3s8VHkfx8+MGYZQkRBqGtKFMje3WIVk2JRyfZLLmBmXZHBmbMplJZLb8hCFTSpaCRshKl2pdPO0W22Ucuumi3bLli6e58zMOTNzZrdnXl5b+7ye888553d+3+/v/fn9Pr/LwQMLCqs2FMad+eDr/srPIYeH37t78KOLupa56nmFuQyldbkAG4CuVkDmwmAwAEb0OEz26mt1Ys3paY6Mc7xdqzzT1fZmiWkeUArM/nX88fO6Etf2tyfHgrBQ1Y09O3WF0UhgyAGesEBNCSmRvpNmdFVgpAuqnlOpfNqejKAp+cc7GSv2XwIAXYuGrKtuGQbzcjjZjhn6wY8O5Gu/XvvEt7gR/+bMop1Wc/xw9StNuBGrH5rWMy0bcxNrajUzNUPzGqZ392zPpPUFdBvbvqGZfAAizu0a3JxXUOCDaQz2+a15ICVlm7+WUZmhnhCgQCwcBSrVIbI9BAC1Wbag+2lFVu9Qia4dg3lrec65ph8OFSmm8AKqRu5x5wI4KMhAC458LNu1eX4YqJmLwx3hq94H2vQk9HJjeq/Y4W+wkzQP6ZSsp22xeqFLWzsGd63NUKqYYykX796WYLVFWIDHIqkkd8HV0iquKipwb4tHakS/5aawfLfhOhpv2GukrCHsmBG3VUMj7X5fbstO1r9Sb14oiuzKT9cDF9v8ssIvWb+8T9VKeYCv/U7LwEyboHtkzJuI+d7SiFbQ+UjLzqL7TnX5Uusuy4te24vfa3QOLTn9+Pad/o7RolU5L60P7MujV19xgZo/D8t/jXF28VzowbBfTKSSadYhltZ0K2pwMIvDYnPIVBrHnE5h0pkc62AajWptTbHmhFiprHF094yPjyexwphgKIcdGMrkkRYTSWQ6yzyYzqbTKRQqyZTEB+MCw7lsThz0jWxKCt4QxYqAHulUGpliTqZYmpJ4fCY/VhBKMSVxoqNYYYJHS3MLczLZ0oJqSmKBHCafw2ay2aAgP5QTaimWx2EL3sypZCuoZENUqCCDn78pKSqWHx3Lh2tyQDAKRL6E8+NEj4mJiQJ4FYmNeJoNYbb1naGVl0Xv+ozfMy+8j1heaPQk+hoAZG4PjG6yrj4x+Z8n3r3cdXF844vopy29nG8MvZJ82Q7uyaGxCUXPyutsbFXXz7p3c8nM1CEAUClM6BkwKa4wfKCTdfl0jneZl8H0vn3pP41W7p8864HPbuA+1JJBM/Bfjfj1glXuo6ex4+FtnhFnvU44MR21da4nvhkI3crmsoxDAt7BRrSVNWLiXzRiYKSUEUeqDNLOVFgPXCjb9O21/pF7aXPOKqar9hYWR6bdTdYr/66Gb1lga1iR79T8j8SS4T3H0m8dKqAvqySs3xYxuuKwUnn4dRdN+jq7mqHyDG2zqZvNjA4rt7PvvrtPodLbvLKTIqHmd/ytRqT83xhRL2DOT8k/+H/Y0B188JadyaFjsSd0cjNu7Gpi/N7Wq+35FSMmoCDGvxR8kpJTSu2Y2qWu+r2rA6VxnvuDl/MvDddmmwOAWaqm07SnHpfU1yW8tS/VcD7l531+sJg2qLHfquKRapsOsA+ygmo/VoQQhLCoo4w4OL8hyKi7mjfLJK1bP3CZ3r2bm9ziNwf451jsd4ipfmH8HjbiV7JGTPq0EQ87+HjULHJDGVGw2QBApPTCjsFiJJueelZE68EPT10OvvjN7lGKa+X05JrWo5l9i1z7uDZ9zb/M+QBzxEk2PVFrM2CH/fmmx+C12WGkZ4iAgyhLXP1cURiE81yxykPwkCeFCWAUBJwHUugKUNWxRq2k/C6sati0oP5rLa1ZFovGSY0eIOtoNMHpzs5TJoqnRJzt5wKxKM7ZMCcOh6QS3wHAZ6Ht1at/4JwvVQCaJBeu3e94Dy/NSXBm8oghHA4PMEMB47AS4BIF/ZJuxrjBgsSi7b3FaeHDk2Pc1K7kltUPBuu8XpFD+Qh37BkYWDycesjUBfIeYqH3zOIwOQKwsgKQUOR9nlTHCz9cHkJ3vFJw7CYiyIwEjFB68FJ6lMCdGeEPPCbbBy4efXGb1K1hbUytd66afDhz2r0qYkUpAA/AWdkBmDnxARDzlt/IF/LeJwBoXohVMACAFopXUYp35bhL98julrrDNZzc8YGeVDLleIKZJ2HSYc7gjs6BD8sVYN5zCC/SFljtIY8XqYrwMiQFj4f/jHcuH2RyeSEckBgCRkUSOVG88KhFkAZIApEfhbxz4oDpKD1KOMmCIc9P47Cf7OAFQ2wKfRk/ZUn8hHT7l/OTIkoPQaRHGCJPz79hPXUNemg9BjJ6sqX1iDC/nB7UARmjjJeMj7z5gYH9tkSyoIsCZ0nmxyfG4y/MDxyKVwXiRULk8WJh3qz5VDQvUcwrdv3n48WieCcpSnjlzWcczJuN8CKBPPF8/iTvl5vPaL+oKgreRSnl6cHDesypM9B6+JL1CU71P9OjpiDxv7wNWgnWs1TW/6SJ+38CGzQeBawuBBbFyAMmwMBuSDDSqKEUsCjV5wRWBWQuDGAhc4ad5d8ReijnY8beqoZJVE7Sy/DY40eUrjYVFWfuqHkzvZXMX5i+IePXkIzrr4+PbTceNFl5i1g5PnVNXG6ic43ixiQK1KB3xtdWp6bxr3uNDa1uPJY+u6V5JrtLLdX+W8P1XM9nK/cKf2RV1eHhDkJYVIRn2CkO13wfrM2pZ3DL9/gOLh1pG63O7wxIf5b94OGqziqQQqumKWo++Y6hDPeg10eR3TBI4LQgDVGBuAS5J/9svq7X5lWt+IOg2ophwZLtgeoUwRl2CtV70wLGkfqRiH5DRlmj3ZsIE/ydHUcXW2XfIlUtZD3vuFDqXre7YUwF5thMwqM5tCQccCrkLiyupHyD4gDKNZzmBtV53HEqqQ9phElwqz09PKG7ujsT5HOhGQRyNjJBtszJUEEKN21ZV/DHjib1dqKHYXJu5za1o3rNbjZ1ZWPn2x07il3uq8G48bK4OhPHdcuL8X6/oKauvoaAxqWjcXnEhdBTJFPwQ4csApHR/E3EaLgaD/pV4wE6KFE4KVHkU+SWzLFaxott7tct98U5xikHqrhzzI+39jx7Vtv049wpsKgEWVF6ExdFTqadXODmtrM+2Q4tSnuNUIxgyXIQ/I46MKFfUEicDLfgWIvklOedSTC3t6yHp//Rw5/NO+hFS3CqRSLl4arCuG/3AmhcbTEukurz4RJQuEoKkt6VZ3V1GNdHtnd1J967n9nqCihRBEgUkl+eqMmwKH4TFi1qhlgUkurvFoU+DirjJCMlb/5OhUX5yo6U/sRHauLzFz0YKhA3kkIetwbM7fpIZkIYiLmRVF+aW9gaQIU28+SGrms/kkXvs+z8DrhVzfcFZ9v7bDW2vex3ALx7+ufdW14F4M+/6oiwD7LLOrLyjj7lZIi98eBU04b+pAFerPNvV4k8P3Bze1gRF/gP0pfElu6WECMAAAAA"
+    },
+    "chain_state": {
+      "log_file": "chain_state_history-421669843-430000000.log",
+      "index_file": "chain_state_history-421669843-430000000.index",
+      "index_entry_offset": 10761680,
+      "record_offset": 1896256047,
+      "next_record_offset": 1896257741,
+      "record_size": 1694,
+      "record_sha256": "a719acfdebd59f3053676cebdaea386719a8b6be76338c54785fab033486fab9",
+      "ship_magic_bytes": "0000000000505dc3",
+      "header_block_id": "1936b28d33012e5e4352364ad163acc26ff5f896ef1a0dc71e12255aaa7fb05c",
+      "compressed_payload_size": 1638,
+      "compressed_payload_sha256": "9c3f0ec791ff8f21b55f3f6f77d40e93b34d1404b53d41c8b752c8ffe0fb18d9",
+      "compression_mode": 1,
+      "decoded_size": 3596,
+      "decoded_sha256": "788f79eed443e6d989a6427e682273c413c71f0f385fdb006fdc3c2d6298ebcb",
+      "trailing_record_offset": 1896256047,
+      "record_base64": "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"
+    }
+  },
+  "expected_translation": {
+    "translator_repository": "https://github.com/telosnetwork/telos-consensus-client",
+    "translator_commit": "9fadee1fd565e3a7ad51c1142e2673df52bd9028",
+    "evm_block_number": 423015017,
+    "transaction_count": 2,
+    "starting_context": {
+      "fixed_gas_price": "0x4c5b4d44112",
+      "revision": 1,
+      "evidence": "Both pre-boundary raw transactions carry the old fixed gas price; the previous doresources config delta at native block 422640757 reports the same value."
+    },
+    "trace_order": [
+      {
+        "translated_transaction_index": 0,
+        "action": "eosio.evm::raw",
+        "native_transaction_id": "ad8b3c7250c00663dde49a193e4861d6468dc3b5a7ab960682735ea8efde6e27",
+        "global_sequence": 10216914681,
+        "evm_transaction_hash": "0x411b585bf0b052f527b1924f500686d4b7c7cab9da18f81cbacfa4405bd15819",
+        "raw_transaction": "0xf86e8263588604c5b4d44112825208941a7883121285dfe08fb89763d084d5c7966dcf92871b723a3bd74c5b801ca0e00c3809e27417fa151d2f170819b3f95620019c37243393c9e7153e36d9dbaaa04039cf37c8558899fb12c9e43fc0e8d8dbe1c5f5964f8df039a6a29034aacc49",
+        "gas_price": "0x4c5b4d44112",
+        "receipt_gas_used": "0x5208",
+        "receipt_status": "0x1"
+      },
+      {
+        "translated_transaction_index": 1,
+        "action": "eosio.evm::raw",
+        "native_transaction_id": "0a957cdae22b99a423e5188bcbc08d569e551d16e0a287d2f5a5a30f1fe5579d",
+        "global_sequence": 10216914682,
+        "evm_transaction_hash": "0x0f19f6c37a76fda3079782e6c54a1deb5ccb910684bf5606481cfcd98ba83a2f",
+        "raw_transaction": "0xf86e825f6d8604c5b4d4411282520894efa81d85c1a439e2c79e797fcee1efde8525c206870cdd95996d85dc801ba08eac7437933c23a49245b6597d9aea9fba87d6ab933444a5086a866bf54cb007a069d14913345c3eace4a089172f117a2f24b009c464dcfadf313234bd558c7e6d",
+        "gas_price": "0x4c5b4d44112",
+        "receipt_gas_used": "0x5208",
+        "receipt_status": "0x1"
+      },
+      {
+        "boundary_after_translated_transactions": 2,
+        "action": "eosio.evm::doresources",
+        "native_transaction_id": "2f84134514eb53ca0e5c7cf8419b1247bf5b56c6e39933e312a338a4e70cbd18",
+        "global_sequence": 10216914683
+      }
+    ],
+    "execution_changes": [
+      {
+        "kind": "fixed_gas_price",
+        "boundary": 2,
+        "value": "0x4c5cea1a119"
+      }
+    ],
+    "child_context": {
+      "fixed_gas_price": "0x4c5cea1a119",
+      "revision": 1
+    },
+    "semantic_assertion": "boundary is transactions.len() at the doresources trace. Both transaction indices 0 and 1 use the old context; the new gas price applies only to the child block. A pre-incremented lookup would incorrectly apply it to transaction index 1."
+  },
+  "decoder_verification": {
+    "method": "One-off integration test in a clean detached worktree decoded the retained signed block, decompressed trace payload, and decompressed chain-state payload with the legacy translator.",
+    "translator_commit": "9fadee1fd565e3a7ad51c1142e2673df52bd9028",
+    "source_path": "translator/src/block.rs",
+    "result": "pass",
+    "observed_transaction_count": 2,
+    "observed_gas_price_change_boundary": 2,
+    "observed_gas_price_change_decimal": "5247621767449",
+    "observed_receipts": [
+      {
+        "transaction_index": 0,
+        "gas_used": "5208",
+        "status": 1
+      },
+      {
+        "transaction_index": 1,
+        "gas_used": "5208",
+        "status": 1
+      }
+    ]
+  },
+  "public_cross_checks": {
+    "evm_block": {
+      "rpc": "https://rpc.telos.net/evm",
+      "number": "0x1936b269",
+      "hash": "0x9af24c613ebf3ba3cbd8a29d9b4c24a0cf5589544a162dfe66c98f25a1ce55c0",
+      "parent_hash": "0x5c9fbb28e4c091a315f59e98063a2a25f8f9ef5413796215cdd4f9744994e292",
+      "extra_data": "0x1936b28d33012e5e4352364ad163acc26ff5f896ef1a0dc71e12255aaa7fb05c",
+      "gas_used": "0xa410",
+      "transaction_hashes": [
+        "0x411b585bf0b052f527b1924f500686d4b7c7cab9da18f81cbacfa4405bd15819",
+        "0x0f19f6c37a76fda3079782e6c54a1deb5ccb910684bf5606481cfcd98ba83a2f"
+      ],
+      "transactions_root": "0x443e22ab543ce4cc3eaf8eb967a0047d8e26cf516c19edda4244b4386f7c8a5b",
+      "receipts_root": "0xd95b673818fa493deec414e01e610d97ee287c9421c8eff4102b1647c1a184e4"
+    },
+    "hyperion": {
+      "endpoint": "https://mainnet.telos.net",
+      "action_query": "/v2/history/get_actions?after=423015053&before=423015053&limit=1000&sort=asc",
+      "delta_query": "/v2/history/get_deltas?code=eosio.evm&after=423015053&before=423015053&limit=100",
+      "observed_config_row": {
+        "trx_index": 1,
+        "last_block": 423015017,
+        "gas_used_block": "000000000000000000000000000000000000000000000000000000000000A410",
+        "gas_price": "000000000000000000000000000000000000000000000000000004C5CEA1A119",
+        "revision": 1
+      }
+    }
+  },
+  "limitations": [
+    "The context change is at boundary == transaction_count, not between transactions with a later transaction. It nevertheless distinguishes correct zero-based lookup from the legacy pre-increment bug because transaction index 1 must retain the old context.",
+    "The running node did not advertise this archived range through its live SHIP catalog. The retained evidence is the exact operator archive records selected through their official index files, not a contemporaneous websocket GetBlocksResult wrapper.",
+    "Public JSON projections are cross-checks only; the base64 archive records are the authoritative captured evidence."
+  ]
+}

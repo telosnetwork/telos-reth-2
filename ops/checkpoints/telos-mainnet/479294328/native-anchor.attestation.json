@@ -1,0 +1,38 @@
+{
+  "chain": "telos-mainnet",
+  "evm_anchor": {
+    "hash": "0x7d62876c8248867708f934b13184ff03440c2b4447a0434562c10bbc783bef51",
+    "native_block_id": "0x1c91739cc32c21f3c44a063b29e17934d1c060d329699616960d181a9e9919bc",
+    "number": 479294328,
+    "parent_hash": "0x0967b59acc1756390b34f7aca359bdae48ef6063c2f3b719157c9bca9ee71cb2",
+    "response_sha256": "0xde533f5e585712003c7213ddef67a0a787bb244d1402e93e4ff42f81f868cf2f"
+  },
+  "evm_chain_id": 40,
+  "evm_first_child": {
+    "hash": "0x927d07d193136f20ecfa3869f56d5ef8e692a7947c2c3843498851efea1e730a",
+    "native_block_id": "0x1c91739d302934d14f203c70c4462023451e16dec456f3e608876315d7c27b6e",
+    "number": 479294329,
+    "parent_hash": "0x7d62876c8248867708f934b13184ff03440c2b4447a0434562c10bbc783bef51",
+    "response_sha256": "0xf07b70b5356685f5b45fa89e1f833a6e2e6930d1e1b7bd43510281e678dbccd7"
+  },
+  "legacy_evidence_sha256": "0xb26d5271bb59c9c84142574a5711610e1a055f47153405a62aa5665fc608118d",
+  "native_anchor": {
+    "id": "1c91739cc32c21f3c44a063b29e17934d1c060d329699616960d181a9e9919bc",
+    "number": 479294364,
+    "previous": "1c91739be4d0962ade75f0fff9d94a780302f80134198f1ab2c5ebf801164e25",
+    "response_sha256": "0x4df24862b82687fb044da61c592cde1dfe6c5212806243e01485e0de6aae96a3"
+  },
+  "native_chain_id": "4667b205c6838ef70ff7988f6e8257e8be0e1284a2f59699054a018f743b1d11",
+  "native_first_child": {
+    "id": "1c91739d302934d14f203c70c4462023451e16dec456f3e608876315d7c27b6e",
+    "number": 479294365,
+    "previous": "1c91739cc32c21f3c44a063b29e17934d1c060d329699616960d181a9e9919bc",
+    "response_sha256": "0x169c47c6e082936fd36cbf39de569e70a57a30f392d099cc4b110dfa3cc9f239"
+  },
+  "nodeos_info_response_sha256": "0xc0b92103936c4492217fa766feb93c5dc85e41a7853aec1a518bb60fbc728813",
+  "observed_last_irreversible_block_id": "1c919063bbd2a80efc2750de3d15fc4e904f189deedc5ffc7e76153dee61b887",
+  "observed_last_irreversible_block_num": 479301731,
+  "starting_child_gas_price": "0x4c6f9119055",
+  "starting_child_revision": 1,
+  "version": 1
+}

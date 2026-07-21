@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+die() {
+    echo "telos-reth Engine readiness: $*" >&2
+    exit 1
+}
+
+[[ $# -eq 2 ]] || die "usage: $0 INSTANCE JWT_CREDENTIAL"
+instance=$1
+jwt_file=$2
+config=/etc/telos-reth/${instance}/node.env
+
+[[ $instance =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || die "invalid instance name"
+[[ -f $config && ! -L $config && -r $config ]] || die "node.env is unavailable"
+# shellcheck disable=SC1090
+source "$config"
+[[ ${AUTHRPC_PORT:-} =~ ^[0-9]+$ ]] && (( AUTHRPC_PORT >= 1024 && AUTHRPC_PORT <= 65535 )) ||
+    die "AUTHRPC_PORT is invalid"
+[[ -f $jwt_file && -r $jwt_file ]] || die "JWT credential is unavailable"
+jwt=$(tr -d '\r\n' < "$jwt_file")
+[[ $jwt =~ ^[[:xdigit:]]{64}$ ]] || die "JWT credential is malformed"
+unset jwt
+
+runtime_dir=${RUNTIME_DIRECTORY:-/run/telos-consensus/${instance}}
+[[ -d $runtime_dir && ! -L $runtime_dir && -w $runtime_dir ]] || die "runtime directory is unavailable"
+curl_config=$(mktemp "${runtime_dir}/engine-curl.XXXXXX")
+response=$(mktemp "${runtime_dir}/engine-response.XXXXXX")
+cleanup() {
+    rm -f "$curl_config" "$response"
+}
+trap cleanup EXIT
+
+payload='{"jsonrpc":"2.0","id":1,"method":"engine_exchangeCapabilities","params":[["engine_forkchoiceUpdatedV1","engine_newPayloadV1"]]}'
+deadline=$(( $(date +%s) + 90 ))
+while (( $(date +%s) < deadline )); do
+    systemctl is-active --quiet "telos-reth@${instance}.service" ||
+        die "execution service is not active"
+    jwt_token=$(python3 - "$jwt_file" <<'PY'
+import base64
+import hashlib
+import hmac
+import json
+import pathlib
+import sys
+import time
+
+secret = bytes.fromhex(pathlib.Path(sys.argv[1]).read_text().strip())
+encode = lambda value: base64.urlsafe_b64encode(value).rstrip(b"=")
+header = encode(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode())
+claims = encode(json.dumps({"iat": int(time.time())}, separators=(",", ":")).encode())
+message = header + b"." + claims
+signature = encode(hmac.new(secret, message, hashlib.sha256).digest())
+print((message + b"." + signature).decode())
+PY
+    )
+    printf 'header = "Authorization: Bearer %s"\n' "$jwt_token" > "$curl_config"
+    chmod 0600 "$curl_config"
+    unset jwt_token
+    if curl --silent --show-error --fail-with-body --connect-timeout 2 --max-time 4 \
+        --max-filesize 65536 \
+        --config "$curl_config" --header 'Content-Type: application/json' --data "$payload" \
+        --output "$response" "http://127.0.0.1:${AUTHRPC_PORT}" 2>/dev/null &&
+       jq -e '.jsonrpc == "2.0" and .id == 1 and (has("error") | not) and
+              (.result | type == "array" and length == 2 and
+               sort == ["engine_forkchoiceUpdatedV1","engine_newPayloadV1"])' \
+           "$response" >/dev/null; then
+        echo "telos-reth Engine readiness [$instance]: authenticated Engine API is ready" >&2
+        exit 0
+    fi
+    sleep 2
+done
+
+die "authenticated Engine API did not become ready within 90 seconds"

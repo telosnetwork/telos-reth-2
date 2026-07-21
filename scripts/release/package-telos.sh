@@ -29,6 +29,14 @@ output_dir=$7
 [[ "$upstream_commit" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid upstream commit: $upstream_commit" >&2; exit 1; }
 [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]] || { echo "invalid SOURCE_DATE_EPOCH: $SOURCE_DATE_EPOCH" >&2; exit 1; }
 
+binary_dir=$(cd "$(dirname "$binary")" && pwd)
+checkpoint_bootstrap="$binary_dir/telos-checkpoint-bootstrap"
+[[ -x "$checkpoint_bootstrap" ]] || { echo "checkpoint bootstrap binary is missing: $checkpoint_bootstrap" >&2; exit 1; }
+legacy_extractor_build="scripts/telos/checkpoint/legacy-extractor/build-exact-legacy-extractor.sh"
+legacy_extractor_source="scripts/telos/checkpoint/legacy-extractor/src/main.rs"
+[[ -x "$legacy_extractor_build" ]] || { echo "exact-legacy extractor build script is missing or not executable: $legacy_extractor_build" >&2; exit 1; }
+[[ -f "$legacy_extractor_source" && ! -L "$legacy_extractor_source" ]] || { echo "exact-legacy extractor source is missing or not a regular file: $legacy_extractor_source" >&2; exit 1; }
+
 archive_root="telos-reth-${version}-${target}"
 mkdir -p "$output_dir"
 output_dir=$(cd "$output_dir" && pwd)
@@ -39,12 +47,24 @@ package_dir="$staging_dir/$archive_root"
 mkdir -p "$package_dir"
 
 install -m 0755 "$binary" "$package_dir/telos-reth"
+install -m 0755 "$checkpoint_bootstrap" "$package_dir/telos-checkpoint-bootstrap"
 cp LICENSE-APACHE LICENSE-MIT README.md "$package_dir/"
 cp -R LICENSES "$package_dir/LICENSES"
+cp -R ops "$package_dir/ops"
+mkdir -p "$package_dir/scripts/telos"
+cp -R scripts/telos/checkpoint "$package_dir/scripts/telos/checkpoint"
+mkdir -p "$package_dir/docs"
+cp -R docs/telos "$package_dir/docs/telos"
+chmod 0755 "$package_dir"/ops/scripts/* "$package_dir"/scripts/telos/checkpoint/*
+chmod 0755 "$package_dir/$legacy_extractor_build"
+chmod 0644 "$package_dir/$legacy_extractor_source"
 
 binary_sha256=$(sha256sum "$package_dir/telos-reth" | cut -d ' ' -f 1)
+checkpoint_bootstrap_sha256=$(sha256sum "$package_dir/telos-checkpoint-bootstrap" | cut -d ' ' -f 1)
+legacy_extractor_build_sha256=$(sha256sum "$package_dir/$legacy_extractor_build" | cut -d ' ' -f 1)
+legacy_extractor_source_sha256=$(sha256sum "$package_dir/$legacy_extractor_source" | cut -d ' ' -f 1)
 cat > "$package_dir/BUILD-METADATA" <<EOF
-format_version=1
+format_version=3
 telos_version=${version}
 source_repository=https://github.com/telosnetwork/telos-reth-2
 source_commit=${source_commit}
@@ -54,6 +74,9 @@ upstream_release=${upstream_release}
 upstream_commit=${upstream_commit}
 rust_target=${target}
 binary_sha256=${binary_sha256}
+checkpoint_bootstrap_sha256=${checkpoint_bootstrap_sha256}
+legacy_extractor_build_sha256=${legacy_extractor_build_sha256}
+legacy_extractor_source_sha256=${legacy_extractor_source_sha256}
 EOF
 
 find "$package_dir" -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +

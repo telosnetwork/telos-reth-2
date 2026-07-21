@@ -2,6 +2,7 @@
 //!
 //! Extends the Ethereum chain spec parser with Telos-specific chains.
 
+use crate::checkpoint::{checkpoint_manifest_path, TelosCheckpointAudit};
 use reth_chainspec::ChainSpec;
 use reth_cli::chainspec::ChainSpecParser;
 use std::sync::Arc;
@@ -25,11 +26,22 @@ pub static TELOS_TESTNET: once_cell::sync::Lazy<Arc<ChainSpec>> =
     });
 
 /// Chains supported by the Telos node.
-pub const SUPPORTED_CHAINS: &[&str] =
-    &["telos", "telos-mainnet", "telos-testnet", "tevmmainnet", "tevmtestnet"];
+pub const SUPPORTED_CHAINS: &[&str] = &[
+    "telos",
+    "telos-mainnet",
+    "telos-testnet",
+    "tevmmainnet",
+    "tevmtestnet",
+    "telos-checkpoint:<manifest>",
+];
 
 /// Clap value parser for [`ChainSpec`]s that includes Telos chains.
 pub fn telos_chain_value_parser(s: &str) -> eyre::Result<Arc<ChainSpec>, eyre::Error> {
+    if let Some(path) = checkpoint_manifest_path(s) {
+        let manifest = TelosCheckpointAudit::load_completed(&path)?;
+        return manifest.checkpoint_chain_spec()
+    }
+
     Ok(match s {
         "telos-mainnet" | "telos" | "tevmmainnet" => TELOS_MAINNET.clone(),
         "telos-testnet" | "tevmtestnet" => TELOS_TESTNET.clone(),

@@ -17,8 +17,11 @@ quickly.
 > repository checks plus companion-client contract tests, restart and reorg tests, testnet soak,
 > shadow-mainnet parity, and a verified rollback snapshot. See the
 > [Telos architecture and launch gates](./docs/telos/architecture.md) and the
-> [compatibility matrix](./docs/telos/compatibility.md). The current candidate deliberately blocks
-> Telos startup until the [Telos EVM semantics are ported to revm 41](./docs/telos/execution-compatibility.md).
+> [compatibility matrix](./docs/telos/compatibility.md). The current candidate contains the isolated,
+> focused-test-covered [Telos revm 41 execution port](./docs/telos/execution-compatibility.md), but
+> deliberately blocks Telos startup until that exact build passes checkpoint bootstrap, live
+> companion ingestion, restart/reorg, and finalized-RPC parity qualification. Historical replay and
+> diagnostic RPC remain behind a separate closed gate.
 
 ## Build the Telos binary
 

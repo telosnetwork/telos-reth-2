@@ -67,6 +67,14 @@ for archive in "${archives[@]}"; do
     seen_targets[$target]=1
 
     tar -tzf "$archive" "${root}/telos-reth" >/dev/null
+    tar -tzf "$archive" "${root}/telos-checkpoint-bootstrap" >/dev/null
+    tar -tzf "$archive" "${root}/ops/scripts/telos-reth-restore" >/dev/null
+    tar -tzf "$archive" "${root}/ops/checkpoints/telos-mainnet/479294328/checkpoint.json" >/dev/null
+    tar -tzf "$archive" "${root}/scripts/telos/checkpoint/create-hot-mdbx-copy.sh" >/dev/null
+    tar -tzf "$archive" "${root}/scripts/telos/checkpoint/legacy-extractor/build-exact-legacy-extractor.sh" >/dev/null
+    tar -tzf "$archive" "${root}/scripts/telos/checkpoint/legacy-extractor/src/main.rs" >/dev/null
+    tar -tzf "$archive" "${root}/docs/telos/checkpoint-bootstrap.md" >/dev/null
+    tar -tzf "$archive" "${root}/docs/telos/compatibility.md" >/dev/null
     tar -tzf "$archive" "${root}/BUILD-METADATA" >/dev/null
     tar -tzf "$archive" "${root}/LICENSE-APACHE" >/dev/null
     tar -tzf "$archive" "${root}/LICENSE-MIT" >/dev/null
@@ -76,28 +84,46 @@ for archive in "${archives[@]}"; do
     tar -xzf "$archive" -C "$staging_dir" "$root"
 
     binary="$staging_dir/$root/telos-reth"
+    checkpoint_bootstrap="$staging_dir/$root/telos-checkpoint-bootstrap"
+    legacy_extractor_build="$staging_dir/$root/scripts/telos/checkpoint/legacy-extractor/build-exact-legacy-extractor.sh"
+    legacy_extractor_source="$staging_dir/$root/scripts/telos/checkpoint/legacy-extractor/src/main.rs"
     metadata="$staging_dir/$root/BUILD-METADATA"
     [[ -x "$binary" ]] || { echo "binary is not executable: $archive_name" >&2; exit 1; }
+    [[ -x "$checkpoint_bootstrap" ]] \
+        || { echo "checkpoint bootstrap is not executable: $archive_name" >&2; exit 1; }
+    [[ -x "$legacy_extractor_build" ]] \
+        || { echo "exact-legacy extractor build script is not executable: $archive_name" >&2; exit 1; }
+    [[ -f "$legacy_extractor_source" && ! -L "$legacy_extractor_source" ]] \
+        || { echo "exact-legacy extractor source is missing: $archive_name" >&2; exit 1; }
 
-    grep -Fxq "format_version=1" "$metadata"
+    grep -Fxq "format_version=3" "$metadata"
     grep -Fxq "telos_version=${version}" "$metadata"
     grep -Fxq "rust_target=${target}" "$metadata"
     source_commit=$(sed -n 's/^source_commit=//p' "$metadata")
     upstream_release=$(sed -n 's/^upstream_release=//p' "$metadata")
     upstream_commit=$(sed -n 's/^upstream_commit=//p' "$metadata")
     recorded_binary_sha=$(sed -n 's/^binary_sha256=//p' "$metadata")
+    recorded_bootstrap_sha=$(sed -n 's/^checkpoint_bootstrap_sha256=//p' "$metadata")
+    recorded_legacy_build_sha=$(sed -n 's/^legacy_extractor_build_sha256=//p' "$metadata")
+    recorded_legacy_source_sha=$(sed -n 's/^legacy_extractor_source_sha256=//p' "$metadata")
     [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]]
     [[ "$upstream_release" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]
     [[ "$upstream_commit" =~ ^[0-9a-f]{40}$ ]]
     [[ "$recorded_binary_sha" == "$(sha256sum "$binary" | cut -d ' ' -f 1)" ]]
+    [[ "$recorded_bootstrap_sha" == "$(sha256sum "$checkpoint_bootstrap" | cut -d ' ' -f 1)" ]]
+    [[ "$recorded_legacy_build_sha" == "$(sha256sum "$legacy_extractor_build" | cut -d ' ' -f 1)" ]]
+    [[ "$recorded_legacy_source_sha" == "$(sha256sum "$legacy_extractor_source" | cut -d ' ' -f 1)" ]]
 
-    case "$architecture" in
-        x86_64) file "$binary" | grep -Eq 'ELF 64-bit.*x86-64' ;;
-        aarch64) file "$binary" | grep -Eq 'ELF 64-bit.*(ARM aarch64|ARM64)' ;;
-    esac
+    for executable in "$binary" "$checkpoint_bootstrap"; do
+        case "$architecture" in
+            x86_64) file "$executable" | grep -Eq 'ELF 64-bit.*x86-64' ;;
+            aarch64) file "$executable" | grep -Eq 'ELF 64-bit.*(ARM aarch64|ARM64)' ;;
+        esac
+    done
 
     if [[ "$(uname -m)" == "$architecture" ]]; then
         "$binary" --version | grep -F "$version" >/dev/null
+        "$checkpoint_bootstrap" --help >/dev/null
     fi
 
     if [[ -z "$expected_source_commit" ]]; then
@@ -123,7 +149,7 @@ if [[ -n "${TELOS_VERSION:-}" ]]; then
 fi
 
 sboms=("$release_dir"/telos-reth-*.spdx.json)
-[[ ${#sboms[@]} -eq 2 ]] || { echo "expected exactly two binary SPDX SBOMs" >&2; exit 1; }
+[[ ${#sboms[@]} -eq 2 ]] || { echo "expected exactly two release-suite SPDX SBOMs" >&2; exit 1; }
 for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
     [[ -f "$release_dir/telos-reth-${expected_version}-${target}.spdx.json" ]] \
         || { echo "SBOM is missing for $target" >&2; exit 1; }

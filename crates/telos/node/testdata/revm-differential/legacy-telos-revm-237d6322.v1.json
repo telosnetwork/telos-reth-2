@@ -1,0 +1,292 @@
+{
+  "schema": "telos-revm-differential-matrix/v1",
+  "evidence_classification": "source-diff-inventory",
+  "limitations": [
+    "This commit is a newer revm-18 development source, not the revm-14 commit used by the production Telos Reth 1.x line.",
+    "The artifact records source hashes, semantic claims, named port tests, and self-consistent constants; it contains no captured legacy runtime outputs.",
+    "Passing the associated tests is not differential execution evidence and does not qualify the Telos execution startup gate."
+  ],
+  "legacy_source": {
+    "repository": "https://github.com/telosnetwork/telos-revm.git",
+    "commit": "237d6322c6f5943af77fccff93fd0f85ecc204ed",
+    "parent": "900409f134c1cbd4489d370a6b037f354afa4a5c",
+    "tree": "a75bcfd73c1d581d35b4e03f5ab7f27ba0eabd73",
+    "author": "Amir Pasha Motamed <pasha@telos.net>",
+    "authored_at": "2024-12-17T17:58:30+03:30",
+    "subject": "Telos runtime changes"
+  },
+  "changed_sources": [
+    {
+      "path": "crates/interpreter/Cargo.toml",
+      "parent_blob": "813f174f6da65bc9d1b12b87d7fb444543f0f928",
+      "commit_blob": "3a44af394ddedc53995ec584da89b99b36f7eef9",
+      "patch_sha256": "6f80ea29d39ec0c424c2bbc21816bf8b834fb4955d1ed7602d685535b413313a"
+    },
+    {
+      "path": "crates/interpreter/src/instructions/contract.rs",
+      "parent_blob": "281e1475829cdc07fcf0d81bf271aa661d702c79",
+      "commit_blob": "7f09f2e7445f658144c50490b7585bceb76e3976",
+      "patch_sha256": "6096795123ba8838b6e54b1ced8d293268d7b779e456cb74c1bf2e9c9ef0e837"
+    },
+    {
+      "path": "crates/interpreter/src/instructions/host.rs",
+      "parent_blob": "612cbac5c12410c087f803bb4b16345fb4af122d",
+      "commit_blob": "eda6e51a7baf7a0749a279c7b87982c31daaa373",
+      "patch_sha256": "d2b321ef0c691194cf4089c6e9cf9ca4590f9f1296d015414b22e0dc692b0390"
+    },
+    {
+      "path": "crates/interpreter/src/instructions/host_env.rs",
+      "parent_blob": "ce934d492fc749360399c127b0412019b64a876f",
+      "commit_blob": "895a25f7a0b6a5c92a6adca5fea626b50e30d52e",
+      "patch_sha256": "b107906c91db80977edb9ab3d56b79150def6a233f6e1f671e503c2579506123"
+    },
+    {
+      "path": "crates/interpreter/src/instructions/stack.rs",
+      "parent_blob": "d75067e1f223ee25ecec1cba7e58b11a9124166d",
+      "commit_blob": "fbff7de8873d87c44bd84100d2cb7d7ac9d3d1b0",
+      "patch_sha256": "98dd354cf815fad192f8b2e6fabd52fdba4bd88e335b211c16b1f10901374e11"
+    },
+    {
+      "path": "crates/primitives/Cargo.toml",
+      "parent_blob": "e8c9cab7f9a05fd716711c3b7d2db7d52946fb85",
+      "commit_blob": "4fe8142ce5c584db5e5f31d347aca4a27070315a",
+      "patch_sha256": "30f65fa9bd9f4227f94547026d32a9c162826dbfa8beb0dd99e8b65a48cf7dba"
+    },
+    {
+      "path": "crates/primitives/src/env.rs",
+      "parent_blob": "e0d856df982748cb0c094f7834e5fd4a1206a61d",
+      "commit_blob": "d4b5ccf0d08ec7dca7dfc3060116c1dfe1f328f7",
+      "patch_sha256": "2e213e1c9275886533b96780f793905810075c230afdb9387e4cad07ebdde982"
+    },
+    {
+      "path": "crates/revm/Cargo.toml",
+      "parent_blob": "2ab2440d612c544c509a49879ee1a378582bd208",
+      "commit_blob": "810b1f1420227b4cedbdace316f7050a953b126a",
+      "patch_sha256": "794e824865f161171333a33731fe1439b258c438d60ec69c8cde1550b37fb16f"
+    },
+    {
+      "path": "crates/revm/src/context/evm_context.rs",
+      "parent_blob": "80f0257a39ef9795e0f32f27d0f0113e3c5b39b7",
+      "commit_blob": "e286c97221c0d967ad9f4e645f4442b397bfb15a",
+      "patch_sha256": "add814888c2c3b9c2d8ff7bd8177522044135679e44a79eb24417a6363cd9863"
+    },
+    {
+      "path": "crates/revm/src/handler/mainnet/post_execution.rs",
+      "parent_blob": "3e2f520e3e28502018290d72d695a0c4fa3b6bad",
+      "commit_blob": "0dfc812034dbd7b1bc22a61ad08597ace9d05570",
+      "patch_sha256": "429bd6d9c19ce16661f1b515f36bded9c242b4d8394dec72e6d878b1dc72c5f3"
+    },
+    {
+      "path": "crates/revm/src/handler/mainnet/pre_execution.rs",
+      "parent_blob": "5309618864015b335d9b5c142b526a5a762dca6d",
+      "commit_blob": "a53b6d0964f9f62a761bd682ceeae91f26359d2b",
+      "patch_sha256": "c7f0504590972283a514e8f2ee96dff774d1f92b2b702e476839b2ffc4a297b1"
+    },
+    {
+      "path": "crates/revm/src/journaled_state.rs",
+      "parent_blob": "7dce85a2f01b68c42a47f3ead63a191fe57f5194",
+      "commit_blob": "26f5b82aace56d106956b85dc8162d107222d214",
+      "patch_sha256": "a2df3b6fd2e2c582bfb792ce9abeb1d1ca9932d3fb7fe55285cbbe1339303ea4"
+    }
+  ],
+  "behaviors": [
+    {
+      "id": "feature-plumbing",
+      "legacy_sources": [
+        "crates/interpreter/Cargo.toml",
+        "crates/primitives/Cargo.toml",
+        "crates/revm/Cargo.toml"
+      ],
+      "legacy_semantics": "Propagate the telos feature through revm primitives and interpreter.",
+      "port": "Dedicated Telos node modules install a custom handler, frame, and instruction table without patching upstream revm.",
+      "tests": [
+        { "path": "src/handler.rs", "function": "authenticated_chain_three_transaction_is_accepted" },
+        { "path": "src/instructions.rs", "function": "synthetic_blockhash_uses_decimal_block_number" }
+      ]
+    },
+    {
+      "id": "fixed-gas-price",
+      "legacy_sources": ["crates/primitives/src/env.rs"],
+      "legacy_semantics": "Legacy GASPRICE, balance validation, and caller deduction use min(signed gas price, native fixed gas price).",
+      "port": "TelosTxEnv caps legacy gas price and the custom handler deducts with U256 arithmetic; RPC receipts use the block-bound schedule.",
+      "golden": { "signed": 100, "fixed": 7, "charged": 7 },
+      "tests": [
+        { "path": "src/handler.rs", "function": "legacy_transaction_gas_price_is_capped_by_native_fixed_price" },
+        { "path": "src/handler.rs", "function": "fixed_fee_deduction_uses_authenticated_native_price" },
+        { "path": "src/instructions.rs", "function": "gasprice_opcode_uses_native_fixed_price_cap" },
+        { "path": "src/receipt.rs", "function": "effective_gas_price_uses_each_transaction_boundary_and_signed_cap" }
+      ]
+    },
+    {
+      "id": "chain-three-authentication",
+      "legacy_sources": ["crates/primitives/src/env.rs"],
+      "legacy_semantics": "Authenticated native transactions may carry legacy EIP-155 chain id 3 on Telos chain 40/41.",
+      "port": "Chain id 3 is accepted only when durable native execution context is attached.",
+      "tests": [
+        { "path": "src/handler.rs", "function": "authenticated_chain_three_transaction_is_accepted" },
+        { "path": "src/handler.rs", "function": "missing_native_context_retains_chain_id_validation" }
+      ]
+    },
+    {
+      "id": "native-nonce-exceptions",
+      "legacy_sources": [
+        "crates/primitives/src/env.rs",
+        "crates/revm/src/handler/mainnet/pre_execution.rs"
+      ],
+      "legacy_semantics": "Allow first nonce 1 over state 0, allow stale nonce 0 for chain 3, advance the first native nonce to 2, and preserve stale-to-zero nonce state.",
+      "port": "The Telos handler validates and updates these cases explicitly before execution.",
+      "tests": [
+        { "path": "src/handler.rs", "function": "native_first_nonce_advances_from_zero_to_two" },
+        { "path": "src/handler.rs", "function": "chain_three_stale_nonce_to_zero_preserves_existing_nonce" },
+        { "path": "src/handler.rs", "function": "chain_three_stale_nonce_to_nonzero_advances_existing_nonce" },
+        { "path": "src/handler.rs", "function": "native_nonce_overflow_is_rejected" }
+      ]
+    },
+    {
+      "id": "zero-sender",
+      "legacy_sources": [
+        "crates/primitives/src/env.rs",
+        "crates/revm/src/context/evm_context.rs",
+        "crates/revm/src/handler/mainnet/pre_execution.rs"
+      ],
+      "legacy_semantics": "Unconditionally add maximum spending to address zero, keep its nonce zero, perform the native transfer, then stop before target bytecode.",
+      "port": "The custom handler performs unconditional checked funding and the Telos frame stops after the authenticated transfer.",
+      "tests": [
+        { "path": "src/handler.rs", "function": "funded_zero_caller_is_unconditionally_topped_up_before_fee_deduction" },
+        { "path": "src/handler.rs", "function": "zero_caller_transfer_stops_before_target_bytecode" },
+        { "path": "src/handler.rs", "function": "zero_caller_to_zero_is_a_balance_neutral_self_transfer_before_stop" }
+      ]
+    },
+    {
+      "id": "zero-address-burn",
+      "legacy_sources": [
+        "crates/revm/src/context/evm_context.rs",
+        "crates/revm/src/journaled_state.rs"
+      ],
+      "legacy_semantics": "A nonzero chain-3 caller transferring to address zero is debited without crediting zero, while zero-to-zero remains neutral and the destination overflow check still occurs.",
+      "port": "Telos frame value application preserves the legacy burn guard, touch, self-transfer, and overflow ordering.",
+      "tests": [
+        { "path": "src/frame.rs", "function": "chain_three_transfer_to_zero_burns_without_crediting_zero" },
+        { "path": "src/frame.rs", "function": "chain_three_zero_caller_to_zero_self_transfer_is_balance_neutral" },
+        { "path": "src/frame.rs", "function": "chain_three_burn_preserves_legacy_destination_overflow_error" },
+        { "path": "src/frame.rs", "function": "unauthenticated_transfer_to_zero_uses_ethereum_credit" }
+      ]
+    },
+    {
+      "id": "no-beneficiary-reward",
+      "legacy_sources": ["crates/revm/src/handler/mainnet/post_execution.rs"],
+      "legacy_semantics": "Do not credit the block beneficiary on Telos chain 40/41.",
+      "port": "TelosHandler overrides beneficiary reward with a no-op.",
+      "tests": [
+        { "path": "src/handler.rs", "function": "telos_does_not_reward_block_beneficiary" }
+      ]
+    },
+    {
+      "id": "first-new-address-introspection",
+      "legacy_sources": ["crates/interpreter/src/instructions/host.rs"],
+      "legacy_semantics": "At revision zero, BALANCE, EXTCODESIZE, EXTCODEHASH, and nonzero-length EXTCODECOPY observe the first empty address and return empty results; zero-length EXTCODECOPY returns before observation.",
+      "port": "Custom instruction handlers share the per-transaction first-new-address slot and preserve the zero-length early return.",
+      "tests": [
+        { "path": "src/instructions.rs", "function": "legacy_account_introspection_opcodes_observe_empty_addresses" },
+        { "path": "src/instructions.rs", "function": "zero_length_extcodecopy_does_not_observe_first_empty_address" },
+        { "path": "src/instructions.rs", "function": "extcodecopy_respects_nonzero_memory_offset" }
+      ]
+    },
+    {
+      "id": "first-new-address-call-staticcall",
+      "legacy_sources": ["crates/interpreter/src/instructions/contract.rs"],
+      "legacy_semantics": "At revision zero, CALL and STATICCALL retain the original bytecode address but remap an empty target to the first empty address observed in the transaction.",
+      "port": "Custom CALL and STATICCALL instruction handlers reproduce target remapping.",
+      "tests": [
+        { "path": "src/instructions.rs", "function": "first_empty_address_remaps_later_legacy_call_target" },
+        { "path": "src/instructions.rs", "function": "first_empty_address_remaps_legacy_staticcall_target" }
+      ]
+    },
+    {
+      "id": "first-new-address-selfdestruct",
+      "legacy_sources": ["crates/interpreter/src/instructions/host.rs"],
+      "legacy_semantics": "SELFDESTRUCT observes an empty beneficiary after applying the state transition and records it when no earlier empty address exists.",
+      "port": "The custom SELFDESTRUCT wrapper observes its beneficiary after delegating state mutation.",
+      "tests": [
+        { "path": "src/instructions.rs", "function": "selfdestruct_observes_empty_beneficiary_after_state_transition" }
+      ]
+    },
+    {
+      "id": "synthetic-blockhash",
+      "legacy_sources": ["crates/interpreter/src/instructions/host.rs"],
+      "legacy_semantics": "BLOCKHASH returns keccak256(decimal block number) for the prior 256 blocks and zero for current/out-of-window blocks.",
+      "port": "The Telos BLOCKHASH instruction implements the same synthetic history window.",
+      "golden": {
+        "block_number": 42,
+        "decimal_preimage": "42",
+        "keccak256": "0xccb1f717aa77602faf03a594761a36956b1c4cf44c6b336d1db57da799b331b8"
+      },
+      "tests": [
+        { "path": "src/instructions.rs", "function": "synthetic_blockhash_uses_decimal_block_number" },
+        { "path": "src/instructions.rs", "function": "synthetic_blockhash_returns_zero_outside_history_window" }
+      ]
+    },
+    {
+      "id": "legacy-gaslimit",
+      "legacy_sources": ["crates/interpreter/src/instructions/host_env.rs"],
+      "legacy_semantics": "GASLIMIT returns 10,000,000 before native revision 2 and the block gas limit from revision 2 onward.",
+      "port": "The Telos GASLIMIT instruction branches on authenticated revision.",
+      "golden": { "revision": 1, "gaslimit": 10000000 },
+      "tests": [
+        { "path": "src/instructions.rs", "function": "legacy_gaslimit_is_fixed_until_revision_two" },
+        { "path": "src/instructions.rs", "function": "missing_native_context_keeps_ethereum_gaslimit" }
+      ]
+    },
+    {
+      "id": "revision-push0",
+      "legacy_sources": ["crates/interpreter/src/instructions/stack.rs"],
+      "legacy_semantics": "Native revision greater than zero enables PUSH0 even before Shanghai; revision zero retains the Ethereum spec gate.",
+      "port": "The custom PUSH0 instruction applies the native revision gate.",
+      "tests": [
+        { "path": "src/instructions.rs", "function": "revision_one_activates_push0_before_shanghai" }
+      ]
+    },
+    {
+      "id": "revision-zero-delegatecall",
+      "legacy_sources": ["crates/revm/src/context/evm_context.rs"],
+      "legacy_semantics": "Revision-zero DELEGATECALL performs the legacy apparent-value balance check and touches the target without changing its balance.",
+      "port": "Telos frame initialization explicitly reproduces this revision-zero check and touch.",
+      "tests": [
+        { "path": "src/frame.rs", "function": "revision_zero_delegatecall_checks_balance_and_touches_account" },
+        { "path": "src/frame.rs", "function": "revision_zero_delegatecall_preserves_balance_and_touches_account" }
+      ]
+    },
+    {
+      "id": "zero-sender-create",
+      "legacy_sources": ["crates/revm/src/journaled_state.rs"],
+      "legacy_semantics": "CREATE by address zero uses nonce zero for address derivation and leaves the caller nonce at zero.",
+      "port": "The Telos create frame supplies the legacy creation nonce only under authenticated native context.",
+      "golden": {
+        "caller": "0x0000000000000000000000000000000000000000",
+        "nonce": 0,
+        "created": "0xbd770416a3345f91e4b34576cb804a576fa48eb1"
+      },
+      "tests": [
+        { "path": "src/frame.rs", "function": "authenticated_zero_create_caller_keeps_zero_nonce" },
+        { "path": "src/frame.rs", "function": "authenticated_zero_create_caller_uses_nonce_zero_golden_address" },
+        { "path": "src/frame.rs", "function": "unauthenticated_zero_create_caller_uses_ethereum_nonce" }
+      ]
+    }
+  ],
+  "supplemental_contract_evidence": {
+    "repository": "https://github.com/telosnetwork/telos.evm.git",
+    "commit": "9f2024a2a65e7c6b9bb98b36b368c359e24e6885",
+    "legacy_rlp_decoder": "eosio.evm/include/eosio.evm/transaction.hpp",
+    "charged_gas_receipt_printer": "eosio.evm/src/print.cpp",
+    "claims": [
+      {
+        "id": "eip1559-production-admission-disabled",
+        "port_test": { "path": "src/handler.rs", "function": "authenticated_eip1559_is_rejected_until_qualified_activation" }
+      },
+      {
+        "id": "receipt-charged-gas-price",
+        "port_test": { "path": "src/receipt.rs", "function": "effective_gas_price_uses_each_transaction_boundary_and_signed_cap" }
+      }
+    ]
+  }
+}

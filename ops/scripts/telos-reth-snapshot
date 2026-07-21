@@ -2,6 +2,25 @@
 set -euo pipefail
 umask 077
 
+validate_restic_read_data_percent() {
+    [[ ${1:-} =~ ^([1-9]|10)$ ]]
+}
+
+run_restic_data_check() {
+    [[ $# -eq 5 ]] || return 64
+    local restic_command=$1 repository_file=$2 password_file=$3 cache_dir=$4 subset_percent=$5
+    validate_restic_read_data_percent "$subset_percent" || return 64
+    RESTIC_CACHE_DIR=$cache_dir "$restic_command" \
+        --repository-file "$repository_file" \
+        --password-file "$password_file" \
+        check "--read-data-subset=${subset_percent}%"
+}
+
+# Keep the data-read command independently testable without exposing a production bypass.
+if [[ ${BASH_SOURCE[0]} != "$0" ]]; then
+    return 0
+fi
+
 die() {
     echo "telos-reth snapshot: $*" >&2
     exit 1
@@ -17,10 +36,25 @@ password_file=$3
 node_config=/etc/telos-reth/${instance}/node.env
 backup_config=/etc/telos-reth/${instance}/backup.env
 [[ -f $node_config && -f $backup_config ]] || die "node.env and backup.env are required"
+[[ ! -L $node_config && ! -L $backup_config ]] || die "configuration files must not be symlinks"
+[[ $(realpath -e "$node_config") == "$node_config" &&
+   $(realpath -e "$backup_config") == "$backup_config" ]] ||
+    die "configuration files must use canonical paths"
+[[ $(stat -c '%U:%G %a' "$(dirname "$node_config")") == 'root:telos-reth-config 750' ]] ||
+    die "the instance configuration directory must be root:telos-reth-config mode 0750"
+[[ $(stat -c '%U:%G %a' "$node_config") == 'root:telos-reth-config 440' ]] ||
+    die "node.env must be root:telos-reth-config mode 0440"
+[[ $(stat -c '%U:%G %a' "$backup_config") == 'root:root 600' ]] ||
+    die "backup.env must be root:root mode 0600"
+grep -Eq '^[[:space:]]*(export[[:space:]]+)?CONSENSUS_UNIT=' "$backup_config" &&
+    die "backup.env must not define CONSENSUS_UNIT"
 # shellcheck disable=SC1090
 source "$node_config"
+node_consensus_unit=${CONSENSUS_UNIT:-}
 # shellcheck disable=SC1090
 source "$backup_config"
+[[ -n $node_consensus_unit && ${CONSENSUS_UNIT:-} == "$node_consensus_unit" ]] ||
+    die "CONSENSUS_UNIT must be defined only by node.env"
 
 execution_dir=/var/lib/telos-reth/${instance}
 execution_unit=telos-reth@${instance}.service
@@ -29,10 +63,13 @@ state_dir=/var/lib/telos-reth-backup/${instance}
 metrics_dir=/var/lib/telos-reth-health/metrics
 metrics_file=${metrics_dir}/telos_reth_backup_${instance}.prom
 cache_dir=/var/cache/telos-reth-backup/${instance}
-lock_file=/run/lock/telos-reth-snapshot-${instance}.lock
+lock_file=${state_dir}/operation.lock
 
-required=(CONSENSUS_DATA_DIR CONSENSUS_UNIT CONSENSUS_BINARY CONSENSUS_VERSION CONSENSUS_SHA256
-    SNAPSHOT_ROOT LOCAL_KEEP RESTIC_TAG HTTP_PORT CHAIN_ID BINARY_SHA256)
+required=(CONSENSUS_DATA_DIR CONSENSUS_UNIT CONSENSUS_BINARY CONSENSUS_CONFIG CONSENSUS_VERSION
+    CONSENSUS_SHA256 SNAPSHOT_ROOT LOCAL_KEEP RESTIC_TAG HTTP_PORT AUTHRPC_PORT CHAIN_ID
+    BINARY_SHA256 CHECKPOINT_MANIFEST CHECKPOINT_MANIFEST_SHA256 CHECKPOINT_AUDIT EXECUTION_ANCHOR
+    EXECUTION_ANCHOR_BLOCK_NUMBER EXECUTION_ANCHOR_BLOCK_HASH NODEOS_URL
+    RESTIC_CHECK_READ_DATA_PERCENT)
 for name in "${required[@]}"; do
     [[ -n ${!name:-} ]] || die "$name is required"
     [[ ${!name} != *REPLACE_* ]] || die "$name still contains a placeholder"
@@ -43,6 +80,8 @@ done
 case "$CONSENSUS_DATA_DIR" in /|/var|/var/lib|/home|/root) die "unsafe consensus data path" ;; esac
 case "$SNAPSHOT_ROOT" in /|/var|/var/lib|/home|/root) die "unsafe snapshot root" ;; esac
 [[ $LOCAL_KEEP =~ ^[1-9][0-9]*$ ]] || die "LOCAL_KEEP must be positive"
+validate_restic_read_data_percent "$RESTIC_CHECK_READ_DATA_PERCENT" ||
+    die "RESTIC_CHECK_READ_DATA_PERCENT must be an integer from 1 through 10"
 [[ -r $repository_file && -r $password_file ]] || die "restic credentials are missing"
 repository=$(tr -d '\r\n' < "$repository_file")
 [[ -n $repository && $repository != *[[:space:]]* ]] || die "restic repository credential is malformed"
@@ -57,13 +96,53 @@ if [[ $repository =~ ://[^/@:]+:[^/@]+@ ]]; then
 fi
 [[ -d $execution_dir && ! -L $execution_dir ]] || die "execution data directory is invalid"
 [[ -d $CONSENSUS_DATA_DIR && ! -L $CONSENSUS_DATA_DIR ]] || die "consensus data directory is invalid"
+[[ $(realpath -e "$execution_dir") == "$execution_dir" &&
+   $(realpath -e "$CONSENSUS_DATA_DIR") == "$CONSENSUS_DATA_DIR" ]] ||
+    die "data directories must use canonical paths"
+mountpoint -q "$execution_dir" && die "execution data directory must not be a mount point"
+mountpoint -q "$CONSENSUS_DATA_DIR" && die "consensus data directory must not be a mount point"
+[[ $(stat -c '%U:%G' "$execution_dir") == telos-reth:telos-reth ]] ||
+    die "execution data directory must be owned by telos-reth:telos-reth"
+[[ $(stat -c '%U:%G' "$CONSENSUS_DATA_DIR") == telos-consensus:telos-consensus ]] ||
+    die "consensus data directory must be owned by telos-consensus:telos-consensus"
+for artifact in "$CHECKPOINT_MANIFEST" "$CHECKPOINT_AUDIT" "$EXECUTION_ANCHOR"; do
+    [[ $artifact == /* && -f $artifact && ! -L $artifact ]] ||
+        die "checkpoint artifact is not a regular absolute file: $artifact"
+    [[ $(stat -c '%U:%G %a' "$artifact") == 'root:telos-reth-config 440' ]] ||
+        die "checkpoint artifacts must be root:telos-reth-config mode 0440"
+done
+[[ $CHECKPOINT_MANIFEST == "/etc/telos-reth/${instance}/checkpoint.json" ]] ||
+    die "CHECKPOINT_MANIFEST must use the managed instance path"
+checkpoint_manifest_sha256=$(sha256sum "$CHECKPOINT_MANIFEST" | awk '{print $1}')
+checkpoint_audit_sha256=$(sha256sum "$CHECKPOINT_AUDIT" | awk '{print $1}')
+execution_anchor_sha256=$(sha256sum "$EXECUTION_ANCHOR" | awk '{print $1}')
+[[ $CHECKPOINT_MANIFEST_SHA256 =~ ^[[:xdigit:]]{64}$ &&
+   ${checkpoint_manifest_sha256,,} == ${CHECKPOINT_MANIFEST_SHA256,,} ]] ||
+    die "checkpoint manifest does not match CHECKPOINT_MANIFEST_SHA256"
 mkdir -p "$SNAPSHOT_ROOT/$instance" "$state_dir" "$metrics_dir" "$cache_dir"
+for directory in "$SNAPSHOT_ROOT" "$SNAPSHOT_ROOT/$instance" "$state_dir" "$cache_dir"; do
+    [[ -d $directory && ! -L $directory && $(realpath -e "$directory") == "$directory" ]] ||
+        die "snapshot state path must be a canonical real directory: $directory"
+done
+[[ -d $metrics_dir && ! -L $metrics_dir && $(realpath -e "$metrics_dir") == "$metrics_dir" &&
+   $(stat -c '%U:%G' "$metrics_dir") == telos-monitor:telos-monitor ]] ||
+    die "metrics directory must be canonical and owned by telos-monitor:telos-monitor"
+[[ -d $state_dir && ! -L $state_dir && $(stat -c '%U:%G' "$state_dir") == root:root ]] ||
+    die "backup state directory must be a root-owned directory"
+chmod 0700 "$state_dir"
 
 exec 9>"$lock_file"
 flock -n 9 || die "another snapshot or restore is running"
 
+/usr/local/libexec/telos-reth-consensus-binding \
+    "$CONSENSUS_UNIT" "$CONSENSUS_BINARY" "$CONSENSUS_CONFIG" "$CONSENSUS_DATA_DIR" \
+    "$CHAIN_ID" "$AUTHRPC_PORT" "$NODEOS_URL" "$EXECUTION_ANCHOR_BLOCK_NUMBER" \
+    "$EXECUTION_ANCHOR_BLOCK_HASH" "$instance" "$CHECKPOINT_MANIFEST"
+
 run_success=0
-services_stopped=0
+execution_stopped=0
+consensus_stopped=0
+services_verified_active=0
 snapshot_size=0
 partial_dir=
 probe_target=
@@ -92,10 +171,10 @@ emit_metrics() {
         echo '# TYPE telos_reth_snapshot_last_remote_success_timestamp_seconds gauge'
         printf 'telos_reth_snapshot_last_remote_success_timestamp_seconds{network="%s"} %s\n' \
             "$instance" "$(metric_value "$state_dir/last-remote-success")"
-        echo '# HELP telos_reth_snapshot_last_remote_verified_timestamp_seconds Last remote snapshot metadata verification.'
-        echo '# TYPE telos_reth_snapshot_last_remote_verified_timestamp_seconds gauge'
-        printf 'telos_reth_snapshot_last_remote_verified_timestamp_seconds{network="%s"} %s\n' \
-            "$instance" "$(metric_value "$state_dir/last-remote-verified")"
+        echo '# HELP telos_reth_snapshot_last_data_verified_timestamp_seconds Last successful authenticated read of remote repository data.'
+        echo '# TYPE telos_reth_snapshot_last_data_verified_timestamp_seconds gauge'
+        printf 'telos_reth_snapshot_last_data_verified_timestamp_seconds{network="%s"} %s\n' \
+            "$instance" "$(metric_value "$state_dir/last-data-verified")"
         echo '# HELP telos_reth_snapshot_size_bytes Apparent size of the most recent local recovery point.'
         echo '# TYPE telos_reth_snapshot_size_bytes gauge'
         printf 'telos_reth_snapshot_size_bytes{network="%s"} %s\n' "$instance" "$snapshot_size"
@@ -105,13 +184,47 @@ emit_metrics() {
 }
 
 restart_services() {
-    (( services_stopped == 1 )) || return 0
-    echo "Restarting $execution_unit and $CONSENSUS_UNIT" >&2
-    systemctl start "$execution_unit" || return 1
-    systemctl is-active --quiet "$execution_unit" || return 1
-    systemctl start "$CONSENSUS_UNIT" || return 1
-    systemctl is-active --quiet "$CONSENSUS_UNIT" || return 1
-    services_stopped=0
+    (( services_verified_active == 1 )) || return 0
+    systemctl is-active --quiet "$execution_unit" || execution_stopped=1
+    systemctl is-active --quiet "$CONSENSUS_UNIT" || consensus_stopped=1
+    if (( execution_stopped == 1 )); then
+        echo "Restarting $execution_unit" >&2
+        systemctl start "$execution_unit" || return 1
+        systemctl is-active --quiet "$execution_unit" || return 1
+        execution_stopped=0
+    fi
+    if (( consensus_stopped == 1 )); then
+        echo "Restarting $CONSENSUS_UNIT" >&2
+        systemctl start "$CONSENSUS_UNIT" || return 1
+        systemctl is-active --quiet "$CONSENSUS_UNIT" || return 1
+        consensus_stopped=0
+    fi
+}
+
+assert_plain_tree() {
+    local root=$1 path unsafe
+    unsafe=$(find "$root" -xdev ! \( -type d -o -type f \) -print -quit)
+    [[ -z $unsafe ]] || die "unsupported special file in data tree: $unsafe"
+    while IFS= read -r -d '' path; do
+        [[ $path != *$'\n'* && $path != *$'\r'* && $path != *'\\'* ]] ||
+            die "data path contains a character unsupported by the checksum inventory"
+        if [[ $path != "$root" ]] && mountpoint -q "$path"; then
+            die "nested mount would make the snapshot incomplete: $path"
+        fi
+    done < <(find "$root" -xdev -print0)
+}
+
+unit_is_stopped() {
+    local unit=$1 main_pid control_pid
+    main_pid=$(systemctl show "$unit" --property=MainPID --value)
+    control_pid=$(systemctl show "$unit" --property=ControlPID --value)
+    case "$(systemctl show "$unit" --property=ActiveState --value)" in
+        inactive|failed)
+            [[ $main_pid == 0 && $control_pid == 0 ]]
+            return
+            ;;
+        *) return 1 ;;
+    esac
 }
 
 finish() {
@@ -122,6 +235,16 @@ finish() {
         echo "CRITICAL: services did not restart after snapshot" >&2
         rc=1
     fi
+    if [[ -n $partial_dir && -d $partial_dir && ! -L $partial_dir ]]; then
+        case "$partial_dir" in
+            "${SNAPSHOT_ROOT}/${instance}"/.*.partial)
+                find "$partial_dir" -xdev -type d -exec chmod u+w {} +
+                find "$partial_dir" -xdev -type f -exec chmod u+w {} +
+                find "$partial_dir" -xdev -depth -delete
+                ;;
+            *) echo "CRITICAL: refusing to clean unexpected partial path: $partial_dir" >&2 ;;
+        esac
+    fi
     emit_metrics || true
     exit "$rc"
 }
@@ -129,6 +252,19 @@ trap finish EXIT
 
 systemctl is-active --quiet "$execution_unit" || die "$execution_unit is not active"
 systemctl is-active --quiet "$CONSENSUS_UNIT" || die "$CONSENSUS_UNIT is not active"
+execution_pid=$(systemctl show "$execution_unit" --property=MainPID --value)
+[[ $execution_pid =~ ^[1-9][0-9]*$ ]] || die "$execution_unit has no valid MainPID"
+deployed_execution_binary=$(readlink -f /usr/local/bin/telos-reth)
+running_execution_binary=$(readlink -f "/proc/${execution_pid}/exe")
+[[ $running_execution_binary == "$deployed_execution_binary" ]] ||
+    die "$execution_unit is not running the deployment-pinned binary"
+running_execution_inode=$(stat -Lc '%d:%i' "/proc/${execution_pid}/exe")
+deployed_execution_inode=$(stat -Lc '%d:%i' "$deployed_execution_binary")
+[[ $running_execution_inode == "$deployed_execution_inode" ]] ||
+    die "$execution_unit is running a replaced executable inode"
+services_verified_active=1
+assert_plain_tree "$execution_dir"
+assert_plain_tree "$CONSENSUS_DATA_DIR"
 systemctl reset-failed "$health_unit" >/dev/null 2>&1 || true
 systemctl start --wait "$health_unit" || die "pre-snapshot readiness failed"
 
@@ -140,8 +276,9 @@ snapshot_device=$(stat -c '%d' "$SNAPSHOT_ROOT")
 [[ $execution_device == "$snapshot_device" && $consensus_device == "$snapshot_device" ]] ||
     die "data directories and SNAPSHOT_ROOT must share a filesystem"
 probe_source=$(find "$execution_dir" -xdev -type f -print -quit)
-probe_target=${SNAPSHOT_ROOT}/.telos-reflink-probe-target
+probe_target=${SNAPSHOT_ROOT}/.telos-reflink-probe-${instance}-$$
 [[ -n $probe_source ]] || die "execution data directory has no regular file for a reflink probe"
+[[ ! -e $probe_target ]] || die "reflink probe target already exists: $probe_target"
 if ! cp --reflink=always "$probe_source" "$probe_target" 2>/dev/null; then
     rm -f "$probe_target"
     probe_target=
@@ -156,13 +293,14 @@ finalized_response=$(curl --silent --show-error --fail-with-body --connect-timeo
     die "could not record finalized block"
 finalized_number=$(jq -er '.result.number' <<< "$finalized_response") || die "finalized block number is unavailable"
 finalized_hash=$(jq -er '.result.hash' <<< "$finalized_response") || die "finalized block hash is unavailable"
-binary=$(readlink -f /usr/local/bin/telos-reth)
+binary=$deployed_execution_binary
 binary_version=$($binary --version | head -n 1)
 actual_digest=$(sha256sum "$binary" | awk '{print $1}')
 [[ ${actual_digest,,} == ${BINARY_SHA256,,} ]] || die "running binary digest differs from approved digest"
 consensus_binary=$(readlink -f "$CONSENSUS_BINARY")
 consensus_version=$($consensus_binary --version | head -n 1)
 consensus_digest=$(sha256sum "$consensus_binary" | awk '{print $1}')
+consensus_config_digest=$(sha256sum "$CONSENSUS_CONFIG" | awk '{print $1}')
 [[ $consensus_version == "$CONSENSUS_VERSION" ]] || die "consensus version differs from pinned version"
 [[ ${consensus_digest,,} == ${CONSENSUS_SHA256,,} ]] || die "consensus digest differs from approved digest"
 
@@ -173,42 +311,81 @@ final_dir=${SNAPSHOT_ROOT}/${instance}/${snapshot_id}
 mkdir -m 0700 "$partial_dir"
 
 echo "Stopping consensus, then execution, for coordinated reflink clones" >&2
-systemctl stop "$CONSENSUS_UNIT"
-systemctl stop "$execution_unit"
-services_stopped=1
-systemctl is-active --quiet "$CONSENSUS_UNIT" && die "$CONSENSUS_UNIT did not stop"
-systemctl is-active --quiet "$execution_unit" && die "$execution_unit did not stop"
+if ! systemctl stop "$CONSENSUS_UNIT"; then
+    unit_is_stopped "$CONSENSUS_UNIT" && consensus_stopped=1
+    die "failed to stop $CONSENSUS_UNIT"
+fi
+consensus_stopped=1
+unit_is_stopped "$CONSENSUS_UNIT" || die "$CONSENSUS_UNIT did not stop cleanly"
+if ! systemctl stop "$execution_unit"; then
+    unit_is_stopped "$execution_unit" && execution_stopped=1
+    die "failed to stop $execution_unit"
+fi
+execution_stopped=1
+unit_is_stopped "$execution_unit" || die "$execution_unit did not stop cleanly"
+assert_plain_tree "$execution_dir"
+assert_plain_tree "$CONSENSUS_DATA_DIR"
 
-mkdir -m 0700 "$partial_dir/execution" "$partial_dir/consensus"
+mkdir -m 0700 "$partial_dir/execution" "$partial_dir/consensus" "$partial_dir/checkpoint"
 cp -a --one-file-system --reflink=always "$execution_dir/." "$partial_dir/execution/"
 cp -a --one-file-system --reflink=always "$CONSENSUS_DATA_DIR/." "$partial_dir/consensus/"
-if find "$partial_dir/execution" "$partial_dir/consensus" -xdev -type l -print -quit | grep -q .; then
-    die "snapshot contains a symlink; refusing an unsafe recovery point"
-fi
+cp --no-dereference --preserve=mode,ownership,timestamps \
+    "$CHECKPOINT_MANIFEST" "$partial_dir/checkpoint/checkpoint.json"
+cp --no-dereference --preserve=mode,ownership,timestamps \
+    "$CHECKPOINT_AUDIT" "$partial_dir/checkpoint/checkpoint.audit.json"
+cp --no-dereference --preserve=mode,ownership,timestamps \
+    "$EXECUTION_ANCHOR" "$partial_dir/checkpoint/checkpoint.anchor.json"
 
-# The clones are immutable point-in-time inputs now; resume block production before hashing them.
+# The source trees were proven plain after both services stopped. No service can access the
+# root-owned clone path, so resume production before recursive clone validation and hashing.
 restart_services || die "services failed to restart after reflink clone"
+if find "$partial_dir/execution" "$partial_dir/consensus" "$partial_dir/checkpoint" \
+    -xdev ! \( -type d -o -type f \) -print -quit | grep -q .; then
+    die "snapshot contains a symlink or special file; refusing an unsafe recovery point"
+fi
+[[ $(sha256sum "$partial_dir/checkpoint/checkpoint.json" | awk '{print $1}') == "$checkpoint_manifest_sha256" &&
+   $(sha256sum "$partial_dir/checkpoint/checkpoint.audit.json" | awk '{print $1}') == "$checkpoint_audit_sha256" &&
+   $(sha256sum "$partial_dir/checkpoint/checkpoint.anchor.json" | awk '{print $1}') == "$execution_anchor_sha256" ]] ||
+    die "checkpoint artifacts changed while the recovery point was created"
+unexpected_owner=$(find "$partial_dir/execution" -mindepth 1 -xdev \
+    \( ! -user telos-reth -o ! -group telos-reth \) -print -quit)
+[[ -z $unexpected_owner ]] || die "execution snapshot has unexpected ownership: $unexpected_owner"
+unexpected_owner=$(find "$partial_dir/consensus" -mindepth 1 -xdev \
+    \( ! -user telos-consensus -o ! -group telos-consensus \) -print -quit)
+[[ -z $unexpected_owner ]] || die "consensus snapshot has unexpected ownership: $unexpected_owner"
+chmod -R a-w "$partial_dir/execution" "$partial_dir/consensus" "$partial_dir/checkpoint"
+[[ $(sha256sum "$CONSENSUS_CONFIG" | awk '{print $1}') == "$consensus_config_digest" ]] ||
+    die "consensus configuration changed while the recovery point was created"
 
 jq -n \
-    --arg schema 'telos-reth-snapshot/v1' \
+    --arg schema 'telos-reth-snapshot/v2' \
     --arg instance "$instance" \
     --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg hostname "$(hostname --fqdn)" \
-    --arg chain_id "$CHAIN_ID" \
+    --argjson chain_id "$CHAIN_ID" \
     --arg binary_version "$binary_version" \
     --arg binary_sha256 "$actual_digest" \
     --arg consensus_version "$consensus_version" \
     --arg consensus_sha256 "$consensus_digest" \
+    --arg consensus_config_sha256 "$consensus_config_digest" \
+    --arg checkpoint_manifest_sha256 "$checkpoint_manifest_sha256" \
+    --arg checkpoint_audit_sha256 "$checkpoint_audit_sha256" \
+    --arg execution_anchor_sha256 "$execution_anchor_sha256" \
     --arg finalized_number "$finalized_number" \
     --arg finalized_hash "$finalized_hash" \
     '{schema:$schema,instance:$instance,created_at:$created_at,hostname:$hostname,
       chain_id:$chain_id,binary:{version:$binary_version,sha256:$binary_sha256},
-      consensus_companion:{version:$consensus_version,sha256:$consensus_sha256},
+      consensus_companion:{version:$consensus_version,sha256:$consensus_sha256,
+        config_sha256:$consensus_config_sha256},
+      data_layout:{execution:{owner:"telos-reth",group:"telos-reth"},
+        consensus:{owner:"telos-consensus",group:"telos-consensus"}},
+      checkpoint:{manifest_sha256:$checkpoint_manifest_sha256,audit_sha256:$checkpoint_audit_sha256,
+        execution_anchor_sha256:$execution_anchor_sha256},
       finalized:{number:$finalized_number,hash:$finalized_hash}}' > "$partial_dir/manifest.json"
 
 (
     cd "$partial_dir"
-    find execution consensus -xdev -type f -print0 | LC_ALL=C sort -z | xargs -0r sha256sum
+    find execution consensus checkpoint -xdev -type f -print0 | LC_ALL=C sort -z | xargs -0r sha256sum
     sha256sum manifest.json
 ) > "$partial_dir/SHA256SUMS"
 (
@@ -225,7 +402,8 @@ sync -f "${SNAPSHOT_ROOT}/${instance}"
 printf '%s\n' "$now" > "$state_dir/last-local-success"
 
 # A local CoW clone is a rollback aid, not disaster recovery. The run fails until the complete
-# recovery point is stored in the independently managed restic repository and its metadata reads back.
+# recovery point is stored in the independently managed restic repository, its metadata reads back,
+# and an authenticated bounded subset of repository pack data is read successfully.
 restic_output=$(mktemp "$state_dir/restic.XXXXXX")
 RESTIC_CACHE_DIR=$cache_dir restic --repository-file "$repository_file" --password-file "$password_file" \
     snapshots --json >/dev/null
@@ -238,7 +416,10 @@ RESTIC_CACHE_DIR=$cache_dir restic --repository-file "$repository_file" --passwo
     cat snapshot "$remote_snapshot_id" >/dev/null
 printf '%s\n' "$remote_snapshot_id" > "$final_dir/remote.snapshot-id"
 printf '%s\n' "$now" > "$state_dir/last-remote-success"
-printf '%s\n' "$now" > "$state_dir/last-remote-verified"
+run_restic_data_check restic "$repository_file" "$password_file" "$cache_dir" \
+    "$RESTIC_CHECK_READ_DATA_PERCENT" ||
+    die "authenticated restic repository data verification failed"
+printf '%s\n' "$(date +%s)" > "$state_dir/last-data-verified"
 
 # Only prune local staging points that carry proof of remote upload. Symlinks are never followed.
 mapfile -t snapshots < <(find "${SNAPSHOT_ROOT}/${instance}" -mindepth 1 -maxdepth 1 -type d \
@@ -247,6 +428,12 @@ if (( ${#snapshots[@]} > LOCAL_KEEP )); then
     for candidate in "${snapshots[@]:LOCAL_KEEP}"; do
         candidate_path=${SNAPSHOT_ROOT}/${instance}/${candidate}
         [[ -f $candidate_path/remote.snapshot-id && -f $candidate_path/manifest.json ]] || continue
+        if find "$candidate_path" -xdev ! \( -type d -o -type f \) -print -quit | grep -q .; then
+            echo "Skipping unsafe local snapshot during pruning: $candidate_path" >&2
+            continue
+        fi
+        find "$candidate_path" -xdev -type d -exec chmod u+w {} +
+        find "$candidate_path" -xdev -type f -exec chmod u+w {} +
         find "$candidate_path" -xdev -depth -delete
     done
 fi
