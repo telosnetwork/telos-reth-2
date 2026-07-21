@@ -368,7 +368,7 @@ jobs:
       - name: Check the locked dependency graph against current advisories
         run: |
           cargo metadata --locked --format-version 1 >/dev/null
-          cargo deny check advisories bans licenses sources
+          cargo deny --all-features check advisories bans licenses sources
 
   lint-success:
     name: lint success
