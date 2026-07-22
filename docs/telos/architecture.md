@@ -42,9 +42,9 @@ The production Telos path must fail closed. A payload is invalid when its extra 
 malformed, oversized, replayed, bound to another block, duplicated inconsistently, or incomplete.
 Provider and database failures are internal errors and must never be converted into empty accounts
 or zero storage. The candidate implements block binding, two-way state/receipt/gas reconciliation,
-provider-error handling, and durable pending/dispatched/accepted sidecar lifecycle tests. Startup
-remains gated because those invariants have not yet been qualified with the exact build and
-companion against live canonical data.
+provider-error handling, and durable pending/dispatched/accepted sidecar lifecycle tests. Canonical
+startup may be enabled only on an exact qualification candidate or a release whose signed record
+proves those invariants with the exact build and companion against live canonical data.
 
 Reth still executes every payload transaction with revm. Native account and storage deltas and
 native receipts are authenticated validation records; they must never be used to overwrite a
@@ -102,13 +102,14 @@ A release is eligible for production promotion only after:
 
 Passing repository CI alone is necessary but not sufficient for production promotion.
 Every candidate must also complete the [compatibility matrix](./compatibility.md); a compatible,
-restore-tested Reth Storage V2 snapshot is currently an explicit launch blocker.
+restore-tested Reth Storage V2 snapshot is an explicit launch prerequisite.
 
-The current candidate also has an explicit
+The client also has an explicit
 [Telos EVM execution-compatibility gate](./execution-compatibility.md). The revm 41 port is present;
-the production gate must remain closed until an exact qualification build proves live companion
-ingestion, restart/reorg behavior, and finalized parity. Historical replay and diagnostic RPC have
-a separate gate that remains closed after canonical forward execution is qualified.
+the canonical capability may be enabled for exact qualification, but production eligibility comes
+only from a signed release record proving live companion ingestion, restart/reorg behavior, and
+finalized parity. Historical replay and diagnostic RPC have a separate gate that remains closed
+after canonical forward execution is qualified.
 
 ## Upstream maintenance
 

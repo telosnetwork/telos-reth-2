@@ -47,11 +47,11 @@ pub const DEFAULT_MAX_EXECUTE_BLOCK_BATCH_SIZE: usize = 50;
 
 /// Whether the selected revm backend implements the Telos per-transaction execution context.
 ///
-/// The revm 41 execution port and chain-aware sender recovery are implemented, but this release
-/// gate remains closed until the exact build has completed checkpoint bootstrap, live companion
-/// ingestion, restart/reorg, and finalized-RPC parity qualification. Opening the gate is therefore
-/// an explicit promotion decision rather than an implementation fallback.
-pub const TELOS_REVM_EXECUTION_READY: bool = false;
+/// The revm 41 execution port and chain-aware sender recovery are implemented. This gate is opened
+/// only in an exact candidate selected for isolated live qualification or in a release whose
+/// qualification record has been approved. A true value permits canonical startup; it is not, by
+/// itself, evidence that a build is production-approved.
+pub const TELOS_REVM_EXECUTION_READY: bool = true;
 
 /// Whether historical replay and tracing paths are proven to apply Telos execution semantics.
 ///

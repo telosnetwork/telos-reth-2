@@ -12,9 +12,10 @@ data in one JWT-authenticated Engine API request. The V3 reconciliation envelope
 exact payload, transaction senders, receipts, gas price, revision, and parent execution context.
 Pending reconciliation is not accepted history: only an Engine `VALID` result can promote the
 matching digest, while `INVALID` removes it and conflicting accepted metadata is immutable. The
-Telos execution rules and lifecycle are implemented and covered by focused tests, but production
-startup remains deliberately gated until the exact candidate passes live companion, restart/reorg,
-and finalized-RPC parity qualification. The independent replay-safety gate remains closed.
+Telos execution rules and lifecycle are implemented and covered by focused tests. Canonical startup
+may be enabled only in an exact qualification candidate or a release whose signed record proves
+live companion, restart/reorg, and finalized-RPC parity. The independent replay-safety gate remains
+closed.
 
 There is no production filesystem state-diff side channel. In particular, do not recreate
 `/tmp/telos-extra-fields`, do not allow a companion to publish unauthenticated JSON, and do not add

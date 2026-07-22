@@ -205,10 +205,10 @@ Telos replay qualification gate is complete.
 This command uses the no-peer Telos network implementation, does not configure a transaction
 signer, does not invoke systemd, and uses only the explicit shadow data directory and loopback
 ports. It therefore cannot mutate an existing service's database or forward transactions. Confirm
-the two ports and the JWT file are unique before launch. The revm 41 execution port is present, but
-the checked-in release candidate still fails closed while `TELOS_REVM_EXECUTION_READY` is false.
-Enable it only in an exact, auditable qualification build used for this isolated shadow; production
-promotion requires the resulting live evidence. Keep `TELOS_RPC_REPLAY_READY` false throughout this
+the two ports and the JWT file are unique before launch. Run this only with the exact, auditable
+candidate in which `TELOS_REVM_EXECUTION_READY` permits canonical startup. That capability enables
+the isolated shadow checks but is not production approval; promotion requires the resulting live
+evidence and signed release record. Keep `TELOS_RPC_REPLAY_READY` false throughout this
 qualification so historical replay and diagnostic RPC remain unavailable.
 
 Before any public promotion, compare a finalized window from the anchor forward against the legacy

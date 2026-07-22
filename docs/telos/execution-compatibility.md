@@ -5,10 +5,12 @@
 The Telos EVM semantics are ported to the revm 41 interfaces used by upstream Reth 2.4.1. The port
 is isolated in the Telos transaction environment, handler, instruction table, frame, block
 executor, receipt converter, and EVM factory, and focused tests exercise the known legacy behavior.
-The release candidate nevertheless fails closed for chain IDs 40 and 41 because
-`TELOS_REVM_EXECUTION_READY` remains false until the exact build passes checkpoint bootstrap, live
-companion ingestion, restart/reorg, and finalized-RPC parity qualification. A separate
-`TELOS_RPC_REPLAY_READY` gate remains false for historical replay and diagnostic RPC.
+`TELOS_REVM_EXECUTION_READY` is true only in an exact qualification candidate or an approved
+release so chain IDs 40 and 41 can perform canonical execution. That capability bit is not
+production approval: a build becomes eligible only when its signed release record identifies the
+exact artifacts and attaches reviewed checkpoint, companion, restart/reorg, and finalized-RPC
+evidence. A separate `TELOS_RPC_REPLAY_READY` gate remains false for historical replay and
+diagnostic RPC.
 
 The production Telos Reth 1.x line used `telosnetwork/telos-revm` branch `telos-main` at
 `1706d6bea3f2771e4603e827994038a8786d1256` (revm 14). Its newest development branch is based on
@@ -20,9 +22,9 @@ newer revm-18 development commit `237d6322c6f5943af77fccff93fd0f85ecc204ed`. Its
 and patch hashes, fixture constants, and the presence of named port tests; they do not execute either
 legacy revm or compare runtime outputs. It is therefore neither production provenance nor a
 differential test oracle. Passing the focused port tests proves the behavior of this implementation,
-not parity with production history. The production gate must remain closed until an immutable oracle
-built from the production commit above produces matching transaction, receipt, gas, log, and
-complete state outputs against the exact revm-41 candidate.
+not parity with production history. An approved release record must include evidence from an
+immutable oracle built from the production commit above that matches transaction, receipt, gas,
+log, and complete state outputs against the exact revm-41 candidate.
 
 The removed v2 experiment used standard revm and compensated by skipping execution checks and
 trusting a filesystem state-diff side channel. That design is not carried forward: it could accept
@@ -89,8 +91,9 @@ Only separately specified native effects, currently terminal `create` nonce-one 
 may change state after validation.
 
 The Engine extension accepts ordered gas-price and revision changes only through payload-bound V3
-metadata; the ambiguous legacy scalar fields remain rejected. The false startup gate prevents an
-operator from mistaking an implemented but unqualified backend for a production-approved client.
+metadata; the ambiguous legacy scalar fields remain rejected. Opening canonical startup only on an
+exact qualification candidate makes the live checks possible without treating an unqualified build
+as a production-approved client.
 
 revm 41's public transaction, handler, instruction-table, frame, and EVM-factory extension points
 keep these semantics isolated in Telos crates without a full revm fork. The Telos node disables
@@ -99,9 +102,9 @@ opcode rules.
 
 ## Exit criteria
 
-An isolated, loopback-only qualification build may enable `TELOS_REVM_EXECUTION_READY` so the live
-checks can run. Keep the production branch's startup gate closed until the resulting evidence is
-reviewed. Production promotion requires:
+An isolated, loopback-only qualification candidate may enable `TELOS_REVM_EXECUTION_READY` so the
+live checks can run. Do not tag or deploy that candidate as production until the resulting evidence
+is reviewed and attached to its signed release record. Production promotion requires:
 
 1. an immutable signed build of the isolated revm 41 implementation and exact companion pair;
 2. differential outputs from the pinned Telos Reth 1.x/revm implementation for the semantics above,

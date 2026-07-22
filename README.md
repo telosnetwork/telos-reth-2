@@ -17,11 +17,13 @@ quickly.
 > repository checks plus companion-client contract tests, restart and reorg tests, testnet soak,
 > shadow-mainnet parity, and a verified rollback snapshot. See the
 > [Telos architecture and launch gates](./docs/telos/architecture.md) and the
-> [compatibility matrix](./docs/telos/compatibility.md). The current candidate contains the isolated,
-> focused-test-covered [Telos revm 41 execution port](./docs/telos/execution-compatibility.md), but
-> deliberately blocks Telos startup until that exact build passes checkpoint bootstrap, live
-> companion ingestion, restart/reorg, and finalized-RPC parity qualification. Historical replay and
-> diagnostic RPC remain behind a separate closed gate.
+> [compatibility matrix](./docs/telos/compatibility.md). An exact-build qualification candidate
+> opens canonical Telos startup so its isolated, focused-test-covered
+> [Telos revm 41 execution port](./docs/telos/execution-compatibility.md) can complete checkpoint
+> bootstrap, live companion ingestion, restart/reorg, and finalized-RPC parity qualification. An
+> open capability gate is not production approval: promotion still requires the signed release
+> record and reviewed live evidence. Historical replay and diagnostic RPC remain behind a separate
+> closed gate.
 
 ## Build the Telos binary
 

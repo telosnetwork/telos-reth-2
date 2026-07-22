@@ -8,17 +8,17 @@ created by a different storage schema are not supported deployment inputs.
 
 | Component | Pinned reference | Status |
 | --- | --- | --- |
-| Telos Reth 2 | This repository at the candidate commit | Not production-qualified |
+| Telos Reth 2 | This repository at the candidate commit | Canonical execution capability enabled; production eligibility comes from the signed release record |
 | Upstream Reth | `v2.4.1` / `8eb210175687c9f0c889a3b6795c16781d830e3a` | Source baseline |
-| `telos-consensus-client` | `agent/reth-v2-sidecars` / `1508233bffa81ca430ad242ff9e8cdafeb311ec7` | CI and byte-identical artifact rebuild passed; paired live qualification pending |
+| `telos-consensus-client` | `agent/reth-v2-sidecars` / `0b804f885735b3bf889237fba9ac2164edcbbb7c` | JWT provider regression fixed; release approval requires passing CI, a byte-identical artifact rebuild, and paired live evidence |
 | Telos extra fields | V3 execution metadata, second `engine_newPayloadV1` parameter | Implemented by the pinned candidate pair |
-| Telos EVM backend | Isolated revm 41 port; startup gate closed | Exact-build live qualification required |
-| Reth database | Storage V2 created by this client version | Restore-test required |
-| Bootstrap snapshot | Mainnet sparse candidate at EVM block `479294328`; manifest SHA-256 `c3517da39d0ee8003434ce1e8ed5f304562a86656da1c666b1609a9ea2ae342e` | Import, catch-up, restore, and live parity qualification pending |
+| Telos EVM backend | Isolated revm 41 port; canonical startup gate open | Exact-build live qualification and signed release approval required; diagnostic replay remains closed |
+| Reth database | Storage V2 created by this client version | The signed release record must carry restore-test evidence |
+| Bootstrap snapshot | Mainnet sparse candidate at EVM block `479294328`; manifest SHA-256 `c3517da39d0ee8003434ce1e8ed5f304562a86656da1c666b1609a9ea2ae342e` | The signed release record must carry import, catch-up, restore, and live parity evidence |
 
-The companion reference above is an exact signed candidate commit, not a floating deployment
-recommendation. It becomes an eligible production pair only after its required CI and artifact
-build pass and that exact companion artifact completes checkpoint catch-up, restart, and live parity
+The companion reference above is an exact signed commit, not a floating deployment recommendation.
+A release may pair it only when the release record proves that its required CI and artifact build
+passed and that exact companion artifact completed checkpoint catch-up, restart, and live parity
 qualification with the exact Telos Reth artifact.
 
 ## Required release record
