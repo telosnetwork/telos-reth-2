@@ -487,6 +487,10 @@ where
         })
     }
 
+    fn requires_rpc_transaction_context(&self) -> bool {
+        true
+    }
+
     fn apply_rpc_transaction_context(
         &self,
         block: &SealedBlock<Block>,
@@ -967,6 +971,7 @@ mod tests {
         store.put_pending(&sidecar).unwrap();
         store.mark_dispatched(block_hash, sidecar.digest()).unwrap();
         let config = TelosEvmConfig::new(chain_spec, store.clone(), anchor);
+        assert!(config.requires_rpc_transaction_context());
 
         assert!(matches!(
             config.evm_env(block.header()),

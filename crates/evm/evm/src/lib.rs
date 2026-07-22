@@ -290,6 +290,16 @@ pub trait ConfigureEvm: Clone + Debug + Send + Sync + Unpin {
         Ok(ExecutionReconciliation::Unchanged)
     }
 
+    /// Whether synthetic RPC transactions require the exact resolved block and transaction
+    /// boundary to construct chain-specific execution context.
+    ///
+    /// Keeping this disabled by default preserves the lightweight header-and-state path for
+    /// chains whose [`Self::apply_rpc_transaction_context`] implementation is a no-op. Any
+    /// implementation that needs the block must override this to return `true`.
+    fn requires_rpc_transaction_context(&self) -> bool {
+        false
+    }
+
     /// Applies chain-specific execution context to a synthetic RPC transaction.
     ///
     /// `transaction_boundary` is zero based and may equal the block's transaction count to

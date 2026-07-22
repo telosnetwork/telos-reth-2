@@ -65,6 +65,7 @@ jobs:
                   "reth-db-common",
                   "reth-engine-tree",
                   "reth-evm",
+                  "reth-rpc",
                   "reth-rpc-builder",
                   "reth-rpc-eth-api"
                 ];
@@ -144,6 +145,7 @@ jobs:
                     "reth-db-common",
                     "reth-engine-tree",
                     "reth-evm",
+                    "reth-rpc",
                     "reth-rpc-builder",
                     "reth-rpc-eth-api"
                   ];

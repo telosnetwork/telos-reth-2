@@ -456,7 +456,8 @@ pub trait EthCall: EstimateCall + Call + LoadPendingBlock + LoadBlock + FullEthA
     {
         async move {
             let block_id = block_number.unwrap_or_default();
-            let (state_block, evm_env, at) = self.evm_env_and_recovered_block_at(block_id).await?;
+            let (state_block, evm_env, at) =
+                self.evm_env_and_optional_rpc_context_block_at(block_id).await?;
 
             self.spawn_blocking_io_fut(async move |this| {
                 this.create_access_list_with(evm_env, at, state_block, request, state_override)
@@ -472,7 +473,7 @@ pub trait EthCall: EstimateCall + Call + LoadPendingBlock + LoadBlock + FullEthA
         &self,
         mut evm_env: EvmEnvFor<Self::Evm>,
         at: BlockId,
-        state_block: Arc<RecoveredBlock<BlockTy<Self::Primitives>>>,
+        state_block: Option<Arc<RecoveredBlock<BlockTy<Self::Primitives>>>>,
         request: RpcTxReq<<Self::RpcConvert as RpcConvert>::Network>,
         state_override: Option<StateOverride>,
     ) -> impl Future<Output = Result<AccessListResult, Self::Error>> + Send
@@ -493,12 +494,14 @@ pub trait EthCall: EstimateCall + Call + LoadPendingBlock + LoadBlock + FullEthA
             let initial = request.as_ref().access_list().cloned().unwrap_or_default();
 
             let mut tx_env = this.create_txn_env(&evm_env, request, &mut db)?;
-            this.apply_rpc_transaction_context(
-                state_block.sealed_block(),
-                state_block.body().transaction_count(),
-                at.is_pending(),
-                &mut tx_env,
-            )?;
+            if let Some(state_block) = state_block {
+                this.apply_rpc_transaction_context(
+                    state_block.sealed_block(),
+                    state_block.body().transaction_count(),
+                    at.is_pending(),
+                    &mut tx_env,
+                )?;
+            }
 
             // we want to disable this in eth_createAccessList, since this is common practice used
             // by other node impls and providers <https://github.com/foundry-rs/foundry/issues/4388>
@@ -740,16 +743,19 @@ pub trait Call:
         R: Send + 'static,
     {
         async move {
-            let (state_block, evm_env, at) = self.evm_env_and_recovered_block_at(at).await?;
+            let (state_block, evm_env, at) =
+                self.evm_env_and_optional_rpc_context_block_at(at).await?;
             self.spawn_with_state_at_block(at, move |this, mut db| {
                 let (evm_env, mut tx_env) =
                     this.prepare_call_env(evm_env, request, &mut db, overrides)?;
-                this.apply_rpc_transaction_context(
-                    state_block.sealed_block(),
-                    state_block.body().transaction_count(),
-                    at.is_pending(),
-                    &mut tx_env,
-                )?;
+                if let Some(state_block) = state_block {
+                    this.apply_rpc_transaction_context(
+                        state_block.sealed_block(),
+                        state_block.body().transaction_count(),
+                        at.is_pending(),
+                        &mut tx_env,
+                    )?;
+                }
 
                 f(&mut db, evm_env, tx_env)
             })

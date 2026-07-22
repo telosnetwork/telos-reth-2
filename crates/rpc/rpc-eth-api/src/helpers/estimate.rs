@@ -55,7 +55,7 @@ pub trait EstimateCall: Call {
         mut request: RpcTxReq<<Self::RpcConvert as RpcConvert>::Network>,
         state: S,
         overrides: EvmOverrides,
-        state_block: &SealedBlock<BlockTy<Self::Primitives>>,
+        state_block: Option<&SealedBlock<BlockTy<Self::Primitives>>>,
         pending: bool,
     ) -> Result<U256, Self::Error>
     where
@@ -119,12 +119,14 @@ pub trait EstimateCall: Call {
             .unwrap_or(max_gas_limit);
 
         let mut tx_env = self.create_txn_env(&evm_env, request, &mut db)?;
-        self.apply_rpc_transaction_context(
-            state_block,
-            state_block.body().transaction_count(),
-            pending,
-            &mut tx_env,
-        )?;
+        if let Some(state_block) = state_block {
+            self.apply_rpc_transaction_context(
+                state_block,
+                state_block.body().transaction_count(),
+                pending,
+                &mut tx_env,
+            )?;
+        }
 
         // Check if this is a basic transfer (no input data to account with no code)
         let is_basic_transfer = if tx_env.input().is_empty() &&
@@ -324,7 +326,8 @@ pub trait EstimateCall: Call {
         Self: LoadPendingBlock,
     {
         async move {
-            let (state_block, evm_env, at) = self.evm_env_and_recovered_block_at(at).await?;
+            let (state_block, evm_env, at) =
+                self.evm_env_and_optional_rpc_context_block_at(at).await?;
 
             self.spawn_blocking_io_fut(async move |this| {
                 let state = this.state_at_block_id(at).await?;
@@ -334,7 +337,7 @@ pub trait EstimateCall: Call {
                     request,
                     state,
                     overrides,
-                    state_block.sealed_block(),
+                    state_block.as_deref().map(|block| block.sealed_block()),
                     at.is_pending(),
                 )
             })

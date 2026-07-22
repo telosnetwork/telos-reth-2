@@ -393,6 +393,36 @@ pub trait LoadState:
         }
     }
 
+    /// Returns the optional chain-specific RPC context block, `revm` EVM env, and resolved state
+    /// block id for the requested [`BlockId`].
+    ///
+    /// The full recovered block is loaded only for EVM configurations that explicitly require
+    /// chain-specific transaction context. Other configurations retain the header-only path used
+    /// by [`Self::evm_env_at`].
+    #[expect(clippy::type_complexity)]
+    fn evm_env_and_optional_rpc_context_block_at(
+        &self,
+        at: BlockId,
+    ) -> impl Future<
+        Output = Result<
+            (Option<Arc<RecoveredBlock<BlockTy<Self::Primitives>>>>, EvmEnvFor<Self::Evm>, BlockId),
+            Self::Error,
+        >,
+    > + Send
+    where
+        Self: SpawnBlocking + LoadBlock,
+    {
+        async move {
+            if self.evm_config().requires_rpc_transaction_context() {
+                let (block, evm_env, at) = self.evm_env_and_recovered_block_at(at).await?;
+                Ok((Some(block), evm_env, at))
+            } else {
+                let (evm_env, at) = self.evm_env_at(at).await?;
+                Ok((None, evm_env, at))
+            }
+        }
+    }
+
     /// Returns the next available nonce without gaps for the given address
     /// Next available nonce is either the on chain nonce of the account or the highest consecutive
     /// nonce in the pool + 1
