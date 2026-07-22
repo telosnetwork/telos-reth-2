@@ -47,6 +47,8 @@ ARG TARGETARCH
 ENV CARGO_NET_GIT_FETCH_WITH_CLI=true \
     VERGEN_GIT_DIRTY=false
 
+# Pin jemalloc's x86 host probes so heterogeneous runner page and address-space geometry
+# cannot change the linked binary.
 RUN test -n "${SOURCE_COMMIT}" && \
     test -n "${SOURCE_DATE_EPOCH}" && \
     test -n "${TELOS_VERSION}" && \
@@ -54,7 +56,12 @@ RUN test -n "${SOURCE_COMMIT}" && \
     test -n "${UPSTREAM_COMMIT}" && \
     rm -rf .git && \
     case "${TARGETARCH}" in \
-        amd64) arch_flags="-C target-cpu=x86-64-v2" ;; \
+        amd64) \
+            arch_flags="-C target-cpu=x86-64-v2"; \
+            export JEMALLOC_SYS_WITH_LG_PAGE=12; \
+            export JEMALLOC_SYS_WITH_LG_HUGEPAGE=21; \
+            export JEMALLOC_SYS_WITH_LG_VADDR=57 \
+            ;; \
         arm64) arch_flags="-C target-cpu=generic"; export JEMALLOC_SYS_WITH_LG_PAGE=16 ;; \
         *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac && \

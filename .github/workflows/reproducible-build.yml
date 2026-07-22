@@ -77,10 +77,19 @@ jobs:
           sha256sum output/telos-checkpoint-bootstrap output/telos-reth \
             | sed 's#  output/#  #' > checksum.sha256
           cat checksum.sha256
+          {
+            lscpu
+            getconf PAGESIZE
+            grep '^Hugepagesize:' /proc/meminfo
+          } > build-host.txt
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: reproducible-${{ matrix.machine }}
-          path: checksum.sha256
+          path: |
+            build-host.txt
+            checksum.sha256
+            output/telos-checkpoint-bootstrap
+            output/telos-reth
           if-no-files-found: error
           retention-days: 2
 
