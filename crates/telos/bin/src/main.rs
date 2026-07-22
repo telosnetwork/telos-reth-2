@@ -349,8 +349,8 @@ mod tests {
         let mut output = Vec::new();
         write_telos_build_info(&mut output).unwrap();
 
-        assert_eq!(output.iter().filter(|byte| **byte == b'\n').count(), 1);
         assert_eq!(output.last(), Some(&b'\n'));
+        assert!(!output[..output.len() - 1].contains(&b'\n'));
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&output).unwrap(),
             telos_build_info()
