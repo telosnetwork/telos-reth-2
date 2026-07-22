@@ -17,20 +17,21 @@ use alloy_network::Ethereum;
 use alloy_rpc_types_eth::TransactionRequest;
 use reth_chainspec::{ChainSpec, EthChainSpec, EthereumHardforks, Hardforks};
 use reth_engine_local::LocalPayloadAttributesBuilder;
+use reth_ethereum_consensus::EthBeaconConsensus;
 use reth_ethereum_engine_primitives::{EthBuiltPayload, EthPayloadAttributes};
 use reth_ethereum_primitives::EthPrimitives;
 use reth_evm::{eth::spec::EthExecutorSpec, ConfigureEvm};
 use reth_network::EthNetworkPrimitives;
 use reth_node_api::{FullNodeComponents, HeaderTy, PayloadAttributesBuilder, PrimitivesTy};
 use reth_node_builder::{
-    components::{BasicPayloadServiceBuilder, ComponentsBuilder, NoopNetworkBuilder},
+    components::{
+        BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, NoopNetworkBuilder,
+    },
     node::{FullNodeTypes, NodeTypes},
     rpc::{EthApiBuilder, EthApiCtx, Identity, RpcAddOns},
-    DebugNode, Node, NodeAdapter,
+    BuilderContext, DebugNode, Node, NodeAdapter,
 };
-use reth_node_ethereum::node::{
-    EthereumConsensusBuilder, EthereumPayloadBuilder, EthereumPoolBuilder,
-};
+use reth_node_ethereum::node::{EthereumPayloadBuilder, EthereumPoolBuilder};
 use reth_payload_primitives::PayloadTypes;
 use reth_provider::{
     providers::ProviderFactoryBuilder, ChainSpecProvider, DatabaseProviderFactory, EthStorage,
@@ -89,7 +90,7 @@ impl TelosNode {
         BasicPayloadServiceBuilder<EthereumPayloadBuilder>,
         NoopNetworkBuilder<EthNetworkPrimitives>,
         TelosExecutorBuilder,
-        EthereumConsensusBuilder,
+        TelosConsensusBuilder,
     >
     where
         N: FullNodeTypes<
@@ -107,13 +108,37 @@ impl TelosNode {
             .executor(TelosExecutorBuilder::new(self.execution_anchor))
             .payload(BasicPayloadServiceBuilder::default())
             .noop_network::<EthNetworkPrimitives>()
-            .consensus(EthereumConsensusBuilder::default())
+            .consensus(TelosConsensusBuilder)
     }
 
     /// Instantiates the provider factory builder for a Telos node.
     pub fn provider_factory_builder() -> ProviderFactoryBuilder<Self> {
         ProviderFactoryBuilder::default()
     }
+}
+
+/// Builds Ethereum header validation with Telos's nondecreasing timestamp rule.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TelosConsensusBuilder;
+
+impl<Node> ConsensusBuilder<Node> for TelosConsensusBuilder
+where
+    Node: FullNodeTypes<
+        Types: NodeTypes<ChainSpec: EthChainSpec + EthereumHardforks, Primitives = EthPrimitives>,
+    >,
+{
+    type Consensus = Arc<EthBeaconConsensus<<Node::Types as NodeTypes>::ChainSpec>>;
+
+    async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
+        Ok(Arc::new(telos_consensus(ctx.chain_spec())))
+    }
+}
+
+const fn telos_consensus<ChainSpec>(chain_spec: Arc<ChainSpec>) -> EthBeaconConsensus<ChainSpec>
+where
+    ChainSpec: EthChainSpec + EthereumHardforks,
+{
+    EthBeaconConsensus::new(chain_spec).with_allow_equal_timestamps(true)
 }
 
 impl NodeTypes for TelosNode {
@@ -209,7 +234,7 @@ where
         BasicPayloadServiceBuilder<EthereumPayloadBuilder>,
         NoopNetworkBuilder<EthNetworkPrimitives>,
         TelosExecutorBuilder,
-        EthereumConsensusBuilder,
+        TelosConsensusBuilder,
     >;
 
     type AddOns = TelosAddOns<N>;
@@ -251,6 +276,42 @@ impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TelosNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_consensus::Header;
+    use reth_consensus::HeaderValidator;
+    use reth_primitives_traits::constants::MINIMUM_GAS_LIMIT;
+
+    #[test]
+    fn telos_consensus_uses_nondecreasing_timestamps() {
+        let consensus = telos_consensus(Arc::new(ChainSpec::default()));
+        // Native Telos blocks are produced every 500 ms but Engine API headers use whole seconds.
+        const PARENT_NUMBER: u64 = 479_294_328;
+        const TIMESTAMP: u64 = 1_784_663_988;
+        let parent = reth_primitives_traits::SealedHeader::seal_slow(Header {
+            number: PARENT_NUMBER,
+            timestamp: TIMESTAMP,
+            gas_limit: MINIMUM_GAS_LIMIT,
+            ..Default::default()
+        });
+        let child = |timestamp| {
+            reth_primitives_traits::SealedHeader::seal_slow(Header {
+                parent_hash: parent.hash(),
+                number: PARENT_NUMBER + 1,
+                timestamp,
+                gas_limit: MINIMUM_GAS_LIMIT,
+                ..Default::default()
+            })
+        };
+
+        assert!(consensus.validate_header_against_parent(&child(TIMESTAMP), &parent).is_ok());
+        assert!(matches!(
+            consensus.validate_header_against_parent(&child(TIMESTAMP - 1), &parent),
+            Err(reth_consensus::ConsensusError::TimestampIsInPast {
+                timestamp,
+                parent_timestamp,
+            })
+            if timestamp == TIMESTAMP - 1 && parent_timestamp == TIMESTAMP
+        ));
+    }
 
     #[test]
     fn staged_sync_cannot_ingest_or_mutate_telos_chain_data() {

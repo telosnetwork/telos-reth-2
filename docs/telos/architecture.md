@@ -71,6 +71,11 @@ payload validator may make only the documented chain-specific exceptions needed 
 fields and the native block-hash representation. Those exceptions are valid only for chain IDs 40
 and 41; the stock `reth` binary remains the Ethereum client.
 
+Telos native blocks are scheduled 500 ms apart, while Engine API header timestamps have whole-second
+precision. Consecutive Telos EVM headers therefore require nondecreasing timestamps: equality is
+valid, but a child timestamp below its parent remains invalid. This exception is enabled only by
+the Telos node consensus builder; Ethereum nodes retain Reth's strictly increasing rule.
+
 ## Canonical chain anchors
 
 Chain specifications are guarded by golden tests. The initial anchors are:
