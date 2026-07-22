@@ -10,7 +10,7 @@ created by a different storage schema are not supported deployment inputs.
 | --- | --- | --- |
 | Telos Reth 2 | This repository at the candidate commit | Not production-qualified |
 | Upstream Reth | `v2.4.1` / `8eb210175687c9f0c889a3b6795c16781d830e3a` | Source baseline |
-| `telos-consensus-client` | `agent/reth-v2-sidecars` / `3aae1cadfdd0129c58abe7ab8277fa800ef299fd` | Immutable candidate; paired live qualification pending |
+| `telos-consensus-client` | `agent/reth-v2-sidecars` / `1508233bffa81ca430ad242ff9e8cdafeb311ec7` | CI and byte-identical artifact rebuild passed; paired live qualification pending |
 | Telos extra fields | V3 execution metadata, second `engine_newPayloadV1` parameter | Implemented by the pinned candidate pair |
 | Telos EVM backend | Isolated revm 41 port; startup gate closed | Exact-build live qualification required |
 | Reth database | Storage V2 created by this client version | Restore-test required |
