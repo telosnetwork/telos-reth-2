@@ -689,13 +689,46 @@ mod tests {
     use reth_db_api::{
         cursor::{DbDupCursorRO, DbDupCursorRW, ReverseWalker, Walker},
         models::{AccountBeforeTx, IntegerList, ShardedKey},
-        table::{Encode, Table},
+        table::{Encode, Table, TableInfo},
     };
     use reth_libmdbx::Error;
     use reth_primitives_traits::{Account, StorageEntry};
     use reth_storage_errors::db::{DatabaseWriteError, DatabaseWriteOperation};
     use std::str::FromStr;
     use tempfile::TempDir;
+
+    #[derive(Debug)]
+    struct CustomMetricsTable;
+
+    impl Table for CustomMetricsTable {
+        const NAME: &'static str = "CustomMetricsTable";
+        const DUPSORT: bool = false;
+
+        type Key = u64;
+        type Value = Vec<u8>;
+    }
+
+    #[derive(Debug)]
+    struct CustomMetricsTableInfo;
+
+    impl TableInfo for CustomMetricsTableInfo {
+        fn name(&self) -> &'static str {
+            CustomMetricsTable::NAME
+        }
+
+        fn is_dupsort(&self) -> bool {
+            CustomMetricsTable::DUPSORT
+        }
+    }
+
+    #[derive(Debug)]
+    struct CustomMetricsTables;
+
+    impl TableSet for CustomMetricsTables {
+        fn tables() -> Box<dyn Iterator<Item = Box<dyn TableInfo>>> {
+            Box::new(std::iter::once(Box::new(CustomMetricsTableInfo) as Box<dyn TableInfo>))
+        }
+    }
 
     /// Create database for testing. Returns the `TempDir` to prevent cleanup until test ends.
     fn create_test_db(kind: DatabaseEnvKind) -> (TempDir, DatabaseEnv) {
@@ -727,6 +760,32 @@ mod tests {
     #[test]
     fn db_creation() {
         let _tempdir = create_test_db(DatabaseEnvKind::RW);
+    }
+
+    #[test]
+    fn custom_table_cursors_skip_builtin_metrics() {
+        let tempdir = tempfile::TempDir::new().expect(ERROR_TEMPDIR);
+        let mut env = DatabaseEnv::open(
+            tempdir.path(),
+            DatabaseEnvKind::RW,
+            DatabaseArguments::new(ClientVersion::default()),
+        )
+        .expect(ERROR_DB_CREATION)
+        .with_metrics();
+        env.create_tables().expect(ERROR_TABLE_CREATION);
+        env.create_and_track_tables_for::<CustomMetricsTables>().expect(ERROR_TABLE_CREATION);
+
+        let tx = env.tx_mut().expect(ERROR_INIT_TX);
+        let mut cursor = tx.cursor_write::<CustomMetricsTable>().expect(ERROR_INIT_TX);
+        cursor.upsert(1, &b"custom".to_vec()).expect(ERROR_PUT);
+        assert_eq!(cursor.first().expect(ERROR_GET), Some((1, b"custom".to_vec())));
+        drop(cursor);
+        tx.commit().expect(ERROR_COMMIT);
+
+        let tx = env.tx().expect(ERROR_INIT_TX);
+        let mut cursor = tx.cursor_read::<CustomMetricsTable>().expect(ERROR_INIT_TX);
+        assert_eq!(cursor.first().expect(ERROR_GET), Some((1, b"custom".to_vec())));
+        tx.commit().expect(ERROR_COMMIT);
     }
 
     #[test]

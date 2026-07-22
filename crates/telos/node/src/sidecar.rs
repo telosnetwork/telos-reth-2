@@ -4472,6 +4472,29 @@ mod tests {
     }
 
     #[test]
+    fn mdbx_sidecar_cursors_work_with_database_metrics() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("db");
+        let parent_hash = B256::repeat_byte(0x60);
+        let block_hash = B256::repeat_byte(0x71);
+        let pending = sidecar(block_hash, parent_hash, 7);
+
+        let mut database =
+            Arc::new(init_db(&database_path, DatabaseArguments::default()).unwrap().with_metrics());
+        database.create_tables_for::<TelosSidecarTables>().unwrap();
+        let store = DatabaseTelosSidecarStore::new(database, chain());
+
+        assert_eq!(store.put_pending(&pending).unwrap(), TelosSidecarPutOutcome::InsertedPending);
+        assert_eq!(store.get_records_by_number(7).unwrap().len(), 1);
+        assert_eq!(store.finalized_coverage().unwrap(), None);
+        assert_eq!(
+            store.remove_pending(block_hash, pending.digest()).unwrap(),
+            TelosSidecarRemoveOutcome::RemovedPending
+        );
+        assert!(store.get_records_by_number(7).unwrap().is_empty());
+    }
+
+    #[test]
     fn mdbx_forkchoice_preflight_uses_one_accepted_ancestry_snapshot() {
         let directory = tempfile::tempdir().unwrap();
         let database_path = directory.path().join("db");

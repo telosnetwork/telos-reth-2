@@ -98,8 +98,10 @@ impl DatabaseEnvMetrics {
         transaction_outcomes
     }
 
-    /// Record a metric for database operation executed in `f`.
-    /// Panics if a metric recorder is not found for the given table and operation.
+    /// Records a metric for the database operation executed in `f`.
+    ///
+    /// Operations on custom tables without pre-bound metric handles are still executed, but are not
+    /// instrumented.
     pub(crate) fn record_operation<R>(
         &self,
         table: &'static str,
@@ -114,9 +116,15 @@ impl DatabaseEnvMetrics {
         }
     }
 
-    /// Returns pre-bound operation metric handles for a single table.
-    pub(crate) fn table_operation_metrics(&self, table: &'static str) -> TableOperationMetrics {
-        self.operations.get(table).expect("table operation metric handles not found").clone()
+    /// Returns pre-bound operation metric handles for a single built-in table.
+    ///
+    /// Custom tables are not part of [`Tables::ALL`], so their operations are intentionally not
+    /// instrumented by this cache.
+    pub(crate) fn table_operation_metrics(
+        &self,
+        table: &'static str,
+    ) -> Option<TableOperationMetrics> {
+        self.operations.get(table).cloned()
     }
 
     /// Record metrics for opening a database transaction.
