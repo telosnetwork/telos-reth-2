@@ -10,7 +10,7 @@ created by a different storage schema are not supported deployment inputs.
 | --- | --- | --- |
 | Telos Reth 2 | This repository at the candidate commit | Canonical execution capability enabled; production eligibility comes from the signed release record |
 | Upstream Reth | `v2.4.1` / `8eb210175687c9f0c889a3b6795c16781d830e3a` | Source baseline |
-| `telos-consensus-client` | `agent/reth-v2-sidecars` / `972d32bf39b09225fe4d299027b2ccc072a44158` | JWT provider regression fixed and Engine RPC error details preserved; release approval requires passing CI, a byte-identical artifact rebuild, and paired live evidence |
+| `telos-consensus-client` | `agent/reth-v2-sidecars` / `44efeb336515a32dee5e423c2be898a48016f684` | Engine RPC errors are preserved, configured stop blocks flush exactly, and SIGINT/SIGTERM drain cleanly; release approval requires passing CI, a byte-identical artifact rebuild, and paired live evidence |
 | Telos extra fields | V3 execution metadata, second `engine_newPayloadV1` parameter | Implemented by the pinned candidate pair |
 | Telos EVM backend | Isolated revm 41 port; canonical startup gate open | Exact-build live qualification and signed release approval required; diagnostic replay remains closed |
 | Reth database | Storage V2 created by this client version | The signed release record must carry restore-test evidence |
