@@ -753,7 +753,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sidecar::{InMemoryTelosSidecarStore, TELOS_EXECUTION_ANCHOR_VERSION};
+    use crate::{
+        chainspec::TELOS_MAINNET,
+        sidecar::{InMemoryTelosSidecarStore, TELOS_EXECUTION_ANCHOR_VERSION},
+    };
     use alloy_consensus::{BlockBody, SignableTransaction, TxLegacy, TxType};
     use alloy_genesis::Genesis;
     use alloy_primitives::{Address, Signature, TxKind, U256};
@@ -897,6 +900,105 @@ mod tests {
             computed,
             B256::repeat_byte(0x22),
         ));
+    }
+
+    #[test]
+    fn empty_first_child_does_not_create_an_ethereum_block_reward() {
+        let chain_spec = TELOS_MAINNET.clone();
+        let chain = TelosChainIdentity { chain_id: 40, genesis_hash: chain_spec.genesis_hash() };
+        let parent_block_number = 479_294_328;
+        let parent_hash = B256::from_slice(&alloy_primitives::hex!(
+            "7d62876c8248867708f934b13184ff03440c2b4447a0434562c10bbc783bef51"
+        ));
+        let block_number = parent_block_number + 1;
+        let block_hash = B256::repeat_byte(0x92);
+        let base_fee = U256::from(7);
+        let anchor = TelosExecutionAnchor {
+            version: TELOS_EXECUTION_ANCHOR_VERSION,
+            chain,
+            parent_block_number,
+            parent_block_hash: parent_hash,
+            starting_gas_price: base_fee,
+            starting_revision: 0,
+        };
+
+        let mut execution_payload = empty_payload();
+        execution_payload.parent_hash = parent_hash;
+        execution_payload.state_root = EMPTY_ROOT_HASH;
+        execution_payload.block_number = block_number;
+        execution_payload.gas_limit = u64::MAX;
+        execution_payload.timestamp = 1_754_000_000;
+        execution_payload.base_fee_per_gas = base_fee;
+        execution_payload.block_hash = block_hash;
+        let extra_fields = TelosEngineApiExtraFields {
+            statediffs_account: Some(Vec::new()),
+            statediffs_accountstate: Some(Vec::new()),
+            execution: Some(TelosExecutionMetadataV3 {
+                version: TELOS_EXECUTION_METADATA_VERSION,
+                block_hash,
+                parent_hash,
+                transaction_count: 0,
+                execution_base_fee: base_fee,
+                starting_gas_price: base_fee,
+                starting_revision: 0,
+                gas_price_changes: Vec::new(),
+                revision_changes: Vec::new(),
+            }),
+            new_addresses_using_create: Some(Vec::new()),
+            new_addresses_using_openwallet: Some(Vec::new()),
+            receipts: Some(Vec::new()),
+            ..Default::default()
+        };
+        let payload = TelosExecutionData::new(
+            alloy_rpc_types_engine::ExecutionData {
+                payload: execution_payload.into(),
+                sidecar: alloy_rpc_types_engine::ExecutionPayloadSidecar::none(),
+            },
+            extra_fields.clone(),
+        );
+        let sidecar = TelosExecutionSidecar::new(
+            chain,
+            block_number,
+            block_hash,
+            parent_hash,
+            0,
+            0,
+            extra_fields,
+        )
+        .unwrap();
+        let store = Arc::new(InMemoryTelosSidecarStore::new(chain));
+        store.validate_and_mark_dispatched(&anchor, &sidecar).unwrap();
+        let config = TelosEvmConfig::new(chain_spec, store, anchor);
+
+        let initial_zero_balance = U256::from(0x23fd_d711_b3cc_6713_u64);
+        let mut database = CacheDB::<EmptyDB>::default();
+        database.insert_account_info(
+            Address::ZERO,
+            AccountInfo { balance: initial_zero_balance, ..Default::default() },
+        );
+        let mut state = State::builder().with_database(database).with_bundle_update().build();
+        let env = <TelosEvmConfig<ChainSpec> as ConfigureEngineEvm<TelosExecutionData>>::
+            evm_env_for_payload(&config, &payload)
+            .unwrap();
+        let ctx = <TelosEvmConfig<ChainSpec> as ConfigureEngineEvm<TelosExecutionData>>::
+            context_for_payload(&config, &payload)
+            .unwrap();
+        let evm = config.evm_with_env(&mut state, env);
+        let mut executor = config.create_executor(evm, ctx);
+        executor.apply_pre_execution_changes().unwrap();
+        let (evm, mut result) = executor.finish().unwrap();
+        drop(evm);
+
+        let reconciliation = <TelosEvmConfig<ChainSpec> as ConfigureEngineEvm<
+            TelosExecutionData,
+        >>::reconcile_payload_execution(
+            &config, &payload, &mut state, &mut result
+        )
+        .unwrap();
+        assert_eq!(reconciliation, ExecutionReconciliation::Unchanged);
+        assert!(result.receipts.is_empty());
+        assert_eq!(result.gas_used, 0);
+        assert_eq!(state.basic(Address::ZERO).unwrap().unwrap().balance, initial_zero_balance);
     }
 
     #[test]
@@ -1081,5 +1183,6 @@ mod tests {
         assert_eq!(state.basic(second_sender).unwrap().unwrap().balance, expected_balance);
         assert!(state.basic(Address::repeat_byte(0xaa)).unwrap().is_none());
         assert!(state.basic(Address::repeat_byte(0xbb)).unwrap().is_none());
+        assert!(state.basic(Address::ZERO).unwrap().is_none());
     }
 }

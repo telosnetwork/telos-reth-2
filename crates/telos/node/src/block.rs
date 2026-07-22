@@ -18,6 +18,7 @@ use alloy_evm::{
     Evm, EvmFactory, RecoveredTx,
 };
 use alloy_primitives::{Address, B256};
+use reth_chainspec::{EthereumHardfork, EthereumHardforks, ForkCondition};
 use reth_ethereum_primitives::{Block, Receipt, TransactionSigned};
 use reth_evm::execute::{BlockAssembler, BlockAssemblerInput};
 use reth_evm_ethereum::RethReceiptBuilder;
@@ -39,7 +40,7 @@ pub struct TelosBlockExecutionCtx<'a> {
 /// Factory for Telos-aware block executors.
 #[derive(Clone, Debug)]
 pub struct TelosBlockExecutorFactory<C> {
-    inner: EthBlockExecutorFactory<RethReceiptBuilder, Arc<C>, TelosEvmFactory>,
+    inner: EthBlockExecutorFactory<RethReceiptBuilder, TelosBlockExecutorSpec<C>, TelosEvmFactory>,
 }
 
 impl<C> TelosBlockExecutorFactory<C> {
@@ -48,7 +49,7 @@ impl<C> TelosBlockExecutorFactory<C> {
         Self {
             inner: EthBlockExecutorFactory::new(
                 RethReceiptBuilder::default(),
-                chain_spec,
+                TelosBlockExecutorSpec::new(chain_spec),
                 TelosEvmFactory,
             ),
         }
@@ -62,7 +63,7 @@ where
     type EvmFactory = TelosEvmFactory;
     type TxExecutionResult = <EthBlockExecutorFactory<
         RethReceiptBuilder,
-        Arc<C>,
+        TelosBlockExecutorSpec<C>,
         TelosEvmFactory,
     > as BlockExecutorFactory>::TxExecutionResult;
     type ExecutionCtx<'a> = TelosBlockExecutionCtx<'a>;
@@ -72,7 +73,7 @@ where
         TelosBlockExecutor<
             'a,
             <Self::EvmFactory as EvmFactory>::Evm<DB, I>,
-            &'a Arc<C>,
+            &'a TelosBlockExecutorSpec<C>,
             &'a RethReceiptBuilder,
         >;
 
@@ -203,5 +204,75 @@ where
         Err(BlockExecutionError::msg(
             "Telos payload building is disabled; blocks require authenticated native sidecars",
         ))
+    }
+}
+
+/// Executor-only chain specification that suppresses Ethereum proof-of-work block rewards.
+///
+/// Telos does not have an Ethereum merge fork, so its canonical chain specification must retain
+/// the pre-Paris EVM rules. The stock Ethereum block executor also uses the Paris activation to
+/// decide whether to award a proof-of-work block subsidy. Treating Paris as active only inside the
+/// block executor disables that non-Telos state transition without changing the EVM environment,
+/// header validation, or advertised fork schedule.
+#[derive(Clone, Debug)]
+pub struct TelosBlockExecutorSpec<C> {
+    inner: Arc<C>,
+}
+
+impl<C> TelosBlockExecutorSpec<C> {
+    const fn new(inner: Arc<C>) -> Self {
+        Self { inner }
+    }
+}
+
+impl<C> EthereumHardforks for TelosBlockExecutorSpec<C>
+where
+    C: EthereumHardforks,
+{
+    fn ethereum_fork_activation(&self, fork: EthereumHardfork) -> ForkCondition {
+        if fork == EthereumHardfork::Paris {
+            ForkCondition::ZERO_BLOCK
+        } else {
+            self.inner.ethereum_fork_activation(fork)
+        }
+    }
+}
+
+impl<C> EthExecutorSpec for TelosBlockExecutorSpec<C>
+where
+    C: EthExecutorSpec,
+{
+    fn deposit_contract_address(&self) -> Option<Address> {
+        self.inner.deposit_contract_address()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chainspec::TELOS_MAINNET;
+    use alloy_consensus::{constants::ETH_TO_WEI, Header};
+    use alloy_evm::block::state_changes::post_block_balance_increments;
+    use alloy_primitives::U256;
+    use revm::context::BlockEnv;
+
+    #[test]
+    fn telos_block_executor_does_not_award_ethereum_pow_subsidy() {
+        let beneficiary = Address::ZERO;
+        let block_number = 479_294_329;
+        let block =
+            BlockEnv { number: U256::from(block_number), beneficiary, ..Default::default() };
+
+        let stock_increments =
+            post_block_balance_increments(TELOS_MAINNET.as_ref(), &block, &[] as &[Header], None);
+        assert_eq!(stock_increments.get(&beneficiary), Some(&(2 * ETH_TO_WEI)));
+
+        let spec = TelosBlockExecutorSpec::new(TELOS_MAINNET.clone());
+        let telos_increments = post_block_balance_increments(&spec, &block, &[] as &[Header], None);
+        assert!(telos_increments.is_empty());
+        assert_eq!(
+            spec.ethereum_fork_activation(EthereumHardfork::Berlin),
+            TELOS_MAINNET.ethereum_fork_activation(EthereumHardfork::Berlin)
+        );
     }
 }
