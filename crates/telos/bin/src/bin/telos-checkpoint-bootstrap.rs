@@ -20,9 +20,10 @@ use reth_node_telos::{
     TelosChainSpecParser,
 };
 use reth_provider::{
-    BlockBodyIndicesProvider, BlockHashReader, BlockNumReader, DBProvider, DatabaseProviderFactory,
-    MetadataProvider, RocksDBProviderFactory, StageCheckpointReader, StaticFileProviderFactory,
-    StaticFileSegment, StorageSettings, StorageSettingsCache,
+    BlockBodyIndicesProvider, BlockHashReader, BlockNumReader, ChangeSetReader, DBProvider,
+    DatabaseProviderFactory, MetadataProvider, RocksDBProviderFactory, StageCheckpointReader,
+    StaticFileProviderFactory, StaticFileSegment, StorageChangeSetReader, StorageSettings,
+    StorageSettingsCache,
 };
 use reth_stages::StageId;
 use reth_trie::{trie_cursor::noop::NoopTrieCursorFactory, StateRoot};
@@ -205,7 +206,7 @@ fn verify_fresh_checkpoint_database<PF>(
     manifest: &TelosCheckpointManifest,
 ) -> eyre::Result<()>
 where
-    PF: DatabaseProviderFactory,
+    PF: DatabaseProviderFactory + StaticFileProviderFactory,
     PF::Provider: DBProvider + BlockHashReader + BlockNumReader,
 {
     let provider = provider_factory.database_provider_ro()?;
@@ -243,6 +244,40 @@ where
         eyre::bail!(
             "checkpoint data directory is not fresh (occupied state tables: {occupied:?}); discard it and retry from an empty directory"
         );
+    }
+
+    let static_files = provider_factory.static_file_provider();
+    for segment in [StaticFileSegment::AccountChangeSets, StaticFileSegment::StorageChangeSets] {
+        let range = static_files.get_lowest_range(segment).ok_or_else(|| {
+            eyre::eyre!("fresh checkpoint database is missing the {segment} genesis placeholder")
+        })?;
+        if (range.start(), range.end()) != (block, block) ||
+            static_files.get_highest_static_file_block(segment) != Some(block)
+        {
+            eyre::bail!(
+                "fresh checkpoint {segment} range is {range:?}, expected only the empty anchor {block}"
+            );
+        }
+
+        let jar = static_files.get_segment_provider_for_block(segment, block, None)?;
+        if jar.user_header().expected_block_start() != block {
+            eyre::bail!(
+                "fresh checkpoint {segment} expected file range starts at {}, expected anchor {block}",
+                jar.user_header().expected_block_start()
+            );
+        }
+        let offsets = jar.read_changeset_offsets()?.ok_or_else(|| {
+            eyre::eyre!("fresh checkpoint {segment} is missing its changeset-offset sidecar")
+        })?;
+        if offsets.len() != 1 ||
+            offsets[0].offset() != 0 ||
+            offsets[0].num_changes() != 0 ||
+            jar.rows() != 0
+        {
+            eyre::bail!(
+                "fresh checkpoint {segment} is not an empty anchor placeholder; discard the entire data directory"
+            );
+        }
     }
     Ok(())
 }
@@ -365,6 +400,56 @@ where
         {
             eyre::bail!(
                 "reopened checkpoint {segment} static-file range is {range:?}, expected only {block}"
+            );
+        }
+    }
+
+    for (segment, expected_changes) in [
+        (StaticFileSegment::AccountChangeSets, hashed_accounts),
+        (StaticFileSegment::StorageChangeSets, hashed_storages),
+    ] {
+        let jar = static_files.get_segment_provider_for_block(segment, block, None)?;
+        if jar.user_header().expected_block_start() != block {
+            eyre::bail!(
+                "reopened checkpoint {segment} expected file range starts at {}, expected anchor {block}",
+                jar.user_header().expected_block_start()
+            );
+        }
+        let offsets = jar.read_changeset_offsets()?.ok_or_else(|| {
+            eyre::eyre!("reopened checkpoint {segment} is missing its changeset-offset sidecar")
+        })?;
+        let expected_changes_u64 = u64::try_from(expected_changes)
+            .map_err(|_| eyre::eyre!("reopened checkpoint {segment} row count overflow"))?;
+        if offsets.len() != 1 ||
+            offsets[0].offset() != 0 ||
+            offsets[0].num_changes() != expected_changes_u64 ||
+            jar.rows() != expected_changes
+        {
+            eyre::bail!(
+                "reopened checkpoint {segment} baseline count does not match canonical state: offset {:?}, rows {}, expected {expected_changes}",
+                offsets.first(),
+                jar.rows()
+            );
+        }
+    }
+
+    {
+        let changes = static_files.account_block_changeset(block)?;
+        if changes.len() != hashed_accounts || changes.iter().any(|change| change.info.is_some()) {
+            eyre::bail!(
+                "reopened checkpoint account baseline is invalid: {} entries for {hashed_accounts} accounts, and every previous value must be absent",
+                changes.len()
+            );
+        }
+    }
+    {
+        let changes = static_files.storage_changeset(block)?;
+        if changes.len() != hashed_storages ||
+            changes.iter().any(|(_, change)| !change.value.is_zero())
+        {
+            eyre::bail!(
+                "reopened checkpoint storage baseline is invalid: {} entries for {hashed_storages} slots, and every previous value must be zero",
+                changes.len()
             );
         }
     }

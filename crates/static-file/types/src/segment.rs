@@ -429,6 +429,9 @@ impl SegmentHeader {
     /// For example, if `blocks_per_file` is 500 and genesis is at 502, the range
     /// becomes 502..=999 (start at genesis, end at file boundary).
     pub const fn set_expected_block_start(&mut self, block: BlockNumber) {
+        if self.expected_block_range.start() == block {
+            return
+        }
         let blocks_per_file =
             self.expected_block_range.end() - self.expected_block_range.start() + 1;
         let file_range = find_fixed_range(block, blocks_per_file);

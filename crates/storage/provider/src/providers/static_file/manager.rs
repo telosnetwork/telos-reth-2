@@ -372,9 +372,19 @@ impl<N: NodePrimitives> StaticFileProviderInner<N> {
                 return SegmentRangeInclusive::new(start, start + blocks_per_file - 1);
             }
         }
-        // No block index is available, derive a new range using the fixed number of blocks,
-        // starting from the beginning.
-        find_fixed_range(block, blocks_per_file)
+        // No block index is available, derive a new range using the fixed number of blocks.
+        // A nonzero genesis starts the first physical file at the genesis block while retaining
+        // the normal fixed-range end. The filename must match the expected range stored in the
+        // header or a read-only reopen would look for a file that does not exist.
+        let range = find_fixed_range(block, blocks_per_file);
+        if block >= self.genesis_block_number &&
+            self.genesis_block_number > range.start() &&
+            self.genesis_block_number <= range.end()
+        {
+            SegmentRangeInclusive::new(self.genesis_block_number, range.end())
+        } else {
+            range
+        }
     }
 
     /// Each static file has a fixed number of blocks. This gives out the range where the requested
@@ -3017,11 +3027,98 @@ where
 mod tests {
     use std::collections::BTreeMap;
 
+    use alloy_primitives::Address;
     use reth_chain_state::EthPrimitives;
     use reth_db::test_utils::create_test_static_files_dir;
+    use reth_db_api::models::AccountBeforeTx;
     use reth_static_file_types::{SegmentRangeInclusive, StaticFileSegment};
 
-    use crate::{providers::StaticFileProvider, StaticFileProviderBuilder};
+    use crate::{
+        providers::StaticFileProvider, ChangeSetReader, StaticFileProviderBuilder, StaticFileWriter,
+    };
+
+    #[test]
+    fn nonzero_genesis_changeset_reopens_read_only() -> eyre::Result<()> {
+        const GENESIS: u64 = 253;
+        const BLOCKS_PER_FILE: u64 = 100;
+
+        let (_temp_dir, static_dir) = create_test_static_files_dir();
+        let change = AccountBeforeTx { address: Address::with_last_byte(1), info: None };
+
+        {
+            let sf_rw: StaticFileProvider<EthPrimitives> =
+                StaticFileProviderBuilder::read_write(&static_dir)
+                    .with_blocks_per_file(BLOCKS_PER_FILE)
+                    .with_genesis_block_number(GENESIS)
+                    .build()?;
+
+            assert_eq!(
+                sf_rw.find_fixed_range_with_block_index(
+                    StaticFileSegment::AccountChangeSets,
+                    None,
+                    GENESIS,
+                ),
+                SegmentRangeInclusive::new(GENESIS, 299)
+            );
+            assert_eq!(
+                sf_rw.find_fixed_range_with_block_index(
+                    StaticFileSegment::AccountChangeSets,
+                    None,
+                    275,
+                ),
+                SegmentRangeInclusive::new(GENESIS, 299)
+            );
+            assert_eq!(
+                sf_rw.find_fixed_range_with_block_index(
+                    StaticFileSegment::AccountChangeSets,
+                    None,
+                    300,
+                ),
+                SegmentRangeInclusive::new(300, 399)
+            );
+
+            let mut writer = sf_rw.get_writer(GENESIS, StaticFileSegment::AccountChangeSets)?;
+            writer.user_header_mut().set_expected_block_start(GENESIS);
+            assert_eq!(
+                writer.user_header().expected_block_range(),
+                SegmentRangeInclusive::new(GENESIS, 299)
+            );
+            writer.append_account_changeset(vec![change.clone()], GENESIS)?;
+            writer.commit()?;
+        }
+
+        let sf_ro: StaticFileProvider<EthPrimitives> =
+            StaticFileProviderBuilder::read_only(&static_dir)
+                .with_blocks_per_file(BLOCKS_PER_FILE)
+                .with_genesis_block_number(GENESIS)
+                .build()?;
+        assert_eq!(sf_ro.account_block_changeset(GENESIS)?, vec![change]);
+        assert_eq!(
+            sf_ro.get_lowest_range(StaticFileSegment::AccountChangeSets),
+            Some(SegmentRangeInclusive::new(GENESIS, GENESIS))
+        );
+        assert_eq!(
+            sf_ro.get_highest_static_file_block(StaticFileSegment::AccountChangeSets),
+            Some(GENESIS)
+        );
+
+        let jar = sf_ro.get_segment_provider_for_block(
+            StaticFileSegment::AccountChangeSets,
+            GENESIS,
+            None,
+        )?;
+        assert_eq!(
+            jar.user_header().expected_block_range(),
+            SegmentRangeInclusive::new(GENESIS, 299)
+        );
+        let offsets = jar.read_changeset_offsets()?.unwrap();
+        assert_eq!(offsets.len(), 1);
+        assert_eq!(offsets[0].offset(), 0);
+        assert_eq!(offsets[0].num_changes(), 1);
+        assert_eq!(jar.rows(), 1);
+
+        Ok(())
+    }
 
     #[test]
     fn test_find_fixed_range_with_block_index() -> eyre::Result<()> {

@@ -1,9 +1,11 @@
 use crate::{
-    providers::{NodeTypesForProvider, ProviderNodeTypes, RocksDBBuilder, StaticFileProvider},
+    providers::{
+        NodeTypesForProvider, ProviderNodeTypes, RocksDBBuilder, StaticFileProviderBuilder,
+    },
     HashingWriter, ProviderFactory, TrieWriter,
 };
 use alloy_primitives::B256;
-use reth_chainspec::{ChainSpec, MAINNET};
+use reth_chainspec::{ChainSpec, EthChainSpec, MAINNET};
 use reth_db::{mdbx::DatabaseArguments, test_utils::TempDatabase, DatabaseEnv};
 use reth_errors::ProviderResult;
 use reth_ethereum_engine_primitives::EthEngineTypes;
@@ -65,6 +67,7 @@ pub fn create_test_provider_factory_with_node_types<N: NodeTypesForProvider>(
 
     // Create static_files directory
     std::fs::create_dir_all(&static_files_path).expect("failed to create static_files dir");
+    let genesis_block_number = chain_spec.genesis().number.unwrap_or_default();
 
     // Create database with the datadir path so TempDatabase cleans up everything on drop
     let db = reth_db::test_utils::create_test_rw_db_with_datadir(&datadir_path);
@@ -72,7 +75,10 @@ pub fn create_test_provider_factory_with_node_types<N: NodeTypesForProvider>(
     ProviderFactory::new(
         db,
         chain_spec,
-        StaticFileProvider::read_write(static_files_path).expect("static file provider"),
+        StaticFileProviderBuilder::read_write(static_files_path)
+            .with_genesis_block_number(genesis_block_number)
+            .build()
+            .expect("static file provider"),
         RocksDBBuilder::new(&rocksdb_path)
             .with_default_tables()
             .build()
@@ -97,6 +103,7 @@ pub fn create_test_provider_factory_with_chain_spec_and_db_args(
     let rocksdb_path = datadir_path.join("rocksdb");
 
     std::fs::create_dir_all(&static_files_path).expect("failed to create static_files dir");
+    let genesis_block_number = chain_spec.genesis().number.unwrap_or_default();
 
     let db = reth_db::init_db(&db_path, db_args).expect("failed to init db");
     let db = Arc::new(TempDatabase::new(db, datadir_path));
@@ -104,7 +111,10 @@ pub fn create_test_provider_factory_with_chain_spec_and_db_args(
     ProviderFactory::new(
         db,
         chain_spec,
-        StaticFileProvider::read_write(static_files_path).expect("static file provider"),
+        StaticFileProviderBuilder::read_write(static_files_path)
+            .with_genesis_block_number(genesis_block_number)
+            .build()
+            .expect("static file provider"),
         RocksDBBuilder::new(&rocksdb_path)
             .with_default_tables()
             .build()

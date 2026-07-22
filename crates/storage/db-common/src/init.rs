@@ -265,10 +265,9 @@ where
     // Behaviour reserved only for new nodes should be set in the storage settings.
     provider_rw.write_storage_settings(genesis_storage_settings)?;
 
-    // For non-zero genesis blocks, set expected_block_start BEFORE insert_genesis_state.
-    // When block_range is None, next_block_number() uses expected_block_start. By default,
-    // expected_block_start comes from find_fixed_range which returns the file range start (0),
-    // not the genesis block number. This would cause increment_block(N) to fail.
+    // For non-zero genesis blocks, bind the changeset writers to the genesis height before
+    // insert_genesis_state. When block_range is None, next_block_number() uses this expected start;
+    // keeping it at a pre-genesis file boundary would make increment_block(N) fail.
     let static_file_provider = provider_rw.static_file_provider();
     if genesis_block_number > 0 {
         if genesis_storage_settings.storage_v2 {
@@ -915,16 +914,7 @@ where
     let rocksdb_provider = provider_rw.rocksdb_provider();
     let mut history_batch = rocksdb_provider.batch_with_auto_commit();
     if snapshot_state_tables_empty(provider_rw.tx_ref())? {
-        reset_pre_snapshot_changeset_segment(
-            &static_file_provider,
-            StaticFileSegment::AccountChangeSets,
-            block,
-        )?;
-        reset_pre_snapshot_changeset_segment(
-            &static_file_provider,
-            StaticFileSegment::StorageChangeSets,
-            block,
-        )?;
+        reset_pre_snapshot_changeset_segments(&static_file_provider, block)?;
     }
 
     {
@@ -1054,33 +1044,129 @@ fn snapshot_state_tables_empty<TX: reth_db_api::transaction::DbTx>(
         tx.entries::<tables::Bytecodes>()? == 0)
 }
 
-fn reset_pre_snapshot_changeset_segment<N: NodePrimitives>(
+#[derive(Clone, Copy, Debug)]
+struct SnapshotChangesetReset {
+    segment: StaticFileSegment,
+    expected_block_start: u64,
+    has_existing_segment: bool,
+}
+
+fn reset_pre_snapshot_changeset_segments<N: NodePrimitives>(
+    static_file_provider: &reth_provider::providers::StaticFileProvider<N>,
+    block: u64,
+) -> ProviderResult<()> {
+    // Validate both segments before mutating either one. A fresh nonzero-genesis database already
+    // contains an empty changeset at the synthetic genesis block; the state dump must replace both
+    // placeholders.
+    let plans = [
+        plan_snapshot_changeset_reset(
+            static_file_provider,
+            StaticFileSegment::AccountChangeSets,
+            block,
+        )?,
+        plan_snapshot_changeset_reset(
+            static_file_provider,
+            StaticFileSegment::StorageChangeSets,
+            block,
+        )?,
+    ];
+
+    for plan in plans {
+        apply_snapshot_changeset_reset(static_file_provider, block, plan)?;
+    }
+
+    Ok(())
+}
+
+fn plan_snapshot_changeset_reset<N: NodePrimitives>(
     static_file_provider: &reth_provider::providers::StaticFileProvider<N>,
     segment: StaticFileSegment,
     block: u64,
+) -> ProviderResult<SnapshotChangesetReset> {
+    let highest_block = static_file_provider.get_highest_static_file_block(segment);
+    let expected_block_start = static_file_provider.find_fixed_range(segment, block).start();
+
+    if let Some(highest_block) = highest_block {
+        if highest_block > block {
+            return Err(ProviderError::other(std::io::Error::other(format!(
+                "refusing state import at block {block}: {segment} is already at block {highest_block}"
+            ))))
+        }
+
+        if highest_block == block {
+            let lowest_range = static_file_provider.get_lowest_range(segment).ok_or_else(|| {
+                ProviderError::other(std::io::Error::other(format!(
+                    "refusing to replace {segment} at state-import block {block}: the indexed segment has no lowest range"
+                )))
+            })?;
+            if (lowest_range.start(), lowest_range.end()) != (block, block) {
+                return Err(ProviderError::other(std::io::Error::other(format!(
+                    "refusing to replace {segment} at state-import block {block}: expected the sole range to be anchor-only, got {lowest_range:?}"
+                ))))
+            }
+
+            let provider =
+                static_file_provider.get_segment_provider_for_block(segment, block, None)?;
+            let range = provider.user_header().block_range();
+            if range.as_ref().map(|range| (range.start(), range.end())) != Some((block, block)) {
+                return Err(ProviderError::other(std::io::Error::other(format!(
+                    "refusing to replace {segment} at state-import block {block}: expected an anchor-only range, got {range:?}"
+                ))))
+            }
+            if provider.user_header().expected_block_start() != block {
+                return Err(ProviderError::other(std::io::Error::other(format!(
+                    "refusing to replace {segment} at state-import block {block}: expected file range starts at {}",
+                    provider.user_header().expected_block_start()
+                ))))
+            }
+
+            let offsets = provider
+                .read_changeset_offsets()?
+                .ok_or(ProviderError::CorruptedChangeSetStaticFile)?;
+            if offsets.len() != 1 || offsets[0].offset() != 0 {
+                return Err(ProviderError::CorruptedChangeSetStaticFile)
+            }
+            if offsets[0].num_changes() != 0 {
+                return Err(ProviderError::other(std::io::Error::other(format!(
+                    "refusing to replace non-empty {segment} at state-import block {block}: {} changes",
+                    offsets[0].num_changes()
+                ))))
+            }
+            if provider.rows() != 0 {
+                return Err(ProviderError::CorruptedChangeSetStaticFile)
+            }
+        }
+    }
+
+    Ok(SnapshotChangesetReset {
+        segment,
+        expected_block_start,
+        has_existing_segment: highest_block.is_some(),
+    })
+}
+
+fn apply_snapshot_changeset_reset<N: NodePrimitives>(
+    static_file_provider: &reth_provider::providers::StaticFileProvider<N>,
+    block: u64,
+    plan: SnapshotChangesetReset,
 ) -> ProviderResult<()> {
-    if block == 0 {
-        return Ok(())
-    }
-
-    let Some(highest_block) = static_file_provider.get_highest_static_file_block(segment) else {
-        return Ok(())
-    };
-
-    if highest_block >= block {
-        return Ok(())
-    }
-
-    let file_start = static_file_provider.find_fixed_range(segment, block).start();
+    let SnapshotChangesetReset { segment, expected_block_start, has_existing_segment } = plan;
     info!(
         target: "reth::cli",
         ?segment,
-        highest_block,
+        has_existing_segment,
         import_block = block,
-        file_start,
+        expected_block_start,
         "Resetting pre-snapshot changeset static files before state import"
     );
-    static_file_provider.delete_segment(segment)?;
+    if has_existing_segment {
+        static_file_provider.delete_segment(segment)?;
+    }
+
+    static_file_provider
+        .get_writer(block, segment)?
+        .user_header_mut()
+        .set_expected_block_start(expected_block_start);
 
     Ok(())
 }
@@ -1421,7 +1507,9 @@ mod tests {
         HOLESKY_GENESIS_HASH, MAINNET_GENESIS_HASH, SEPOLIA_GENESIS_HASH,
     };
     use alloy_genesis::Genesis;
-    use reth_chainspec::{Chain, ChainSpec, HOLESKY, MAINNET, SEPOLIA};
+    use reth_chainspec::{
+        make_genesis_header, Chain, ChainSpec, ChainSpecBuilder, HOLESKY, MAINNET, SEPOLIA,
+    };
     use reth_db::DatabaseEnv;
     use reth_db_api::{
         cursor::DbCursorRO,
@@ -1660,6 +1748,180 @@ mod tests {
             .unwrap();
         assert_eq!(account_offsets.len() as u64, block - account_file_start + 1);
         assert_eq!(storage_offsets.len() as u64, block - storage_file_start + 1);
+    }
+
+    #[test]
+    fn state_dump_replaces_empty_nonzero_genesis_changesets() {
+        let block = 10;
+        let address = Address::with_last_byte(1);
+        let storage_key = B256::with_last_byte(2);
+        let account = GenesisAccount {
+            balance: U256::from(3),
+            storage: Some(BTreeMap::from([(storage_key, B256::with_last_byte(4))])),
+            ..Default::default()
+        };
+        let chain_spec = Arc::new(
+            ChainSpecBuilder::default()
+                .chain(Chain::from_id(1))
+                .genesis(Genesis { number: Some(block), ..Default::default() })
+                .build(),
+        );
+        let factory = create_test_provider_factory_with_chain_spec(chain_spec);
+        init_genesis_with_settings(&factory, StorageSettings::v2()).unwrap();
+
+        let expected_state_root = make_genesis_header(
+            &Genesis { alloc: BTreeMap::from([(address, account.clone())]), ..Default::default() },
+            &Default::default(),
+        )
+        .state_root;
+        let mut input = serde_json::to_vec(&StateRoot { root: expected_state_root }).unwrap();
+        input.push(b'\n');
+        input.extend(
+            serde_json::to_vec(&GenesisAccountWithAddress { genesis_account: account, address })
+                .unwrap(),
+        );
+        input.push(b'\n');
+
+        let outcome = init_from_state_dump_with_empty_header_root(
+            input.as_slice(),
+            &factory,
+            EtlConfig::new(None, 128),
+            expected_state_root,
+        )
+        .unwrap();
+        assert_eq!(outcome.block_number, block);
+        assert_eq!(outcome.computed_state_root, expected_state_root);
+
+        let provider = factory.provider().unwrap();
+        assert_eq!(
+            reth_provider::ChangeSetReader::account_block_changeset(&provider, block).unwrap(),
+            vec![AccountBeforeTx { address, info: None }]
+        );
+        assert_eq!(
+            reth_provider::StorageChangeSetReader::storage_changeset(&provider, block).unwrap(),
+            vec![(
+                BlockNumberAddress((block, address)),
+                StorageEntry { key: storage_key, value: U256::ZERO }
+            )]
+        );
+
+        let static_files = factory.static_file_provider();
+        static_files.initialize_index().unwrap();
+        for segment in [StaticFileSegment::AccountChangeSets, StaticFileSegment::StorageChangeSets]
+        {
+            let range = static_files.get_lowest_range(segment).unwrap();
+            assert_eq!((range.start(), range.end()), (block, block));
+            assert_eq!(static_files.get_highest_static_file_block(segment), Some(block));
+
+            let jar = static_files.get_segment_provider_for_block(segment, block, None).unwrap();
+            let offsets = jar.read_changeset_offsets().unwrap().unwrap();
+            assert_eq!(offsets.len(), 1);
+            assert_eq!(offsets[0].offset(), 0);
+            assert_eq!(offsets[0].num_changes(), 1);
+            assert_eq!(jar.rows(), 1);
+        }
+    }
+
+    #[test]
+    fn snapshot_changeset_reset_validates_both_segments_before_deletion() {
+        let block = 10;
+        let address = Address::with_last_byte(1);
+        let storage_key = B256::with_last_byte(2);
+        let chain_spec = Arc::new(
+            ChainSpecBuilder::default()
+                .chain(Chain::from_id(1))
+                .genesis(Genesis { number: Some(block), ..Default::default() })
+                .build(),
+        );
+        let factory = create_test_provider_factory_with_chain_spec(chain_spec);
+        factory.set_storage_settings_cache(StorageSettings::v2());
+        let static_files = factory.static_file_provider();
+
+        {
+            let mut writer =
+                static_files.get_writer(block, StaticFileSegment::AccountChangeSets).unwrap();
+            writer.user_header_mut().set_expected_block_start(block);
+            writer.append_account_changeset(Vec::new(), block).unwrap();
+        }
+        {
+            let mut writer =
+                static_files.get_writer(block, StaticFileSegment::StorageChangeSets).unwrap();
+            writer.user_header_mut().set_expected_block_start(block);
+            writer
+                .append_storage_changeset(
+                    vec![reth_db_api::models::StorageBeforeTx {
+                        address,
+                        key: storage_key,
+                        value: U256::ZERO,
+                    }],
+                    block,
+                )
+                .unwrap();
+        }
+        static_files.commit().unwrap();
+        static_files.initialize_index().unwrap();
+
+        let error = reset_pre_snapshot_changeset_segments(&static_files, block).unwrap_err();
+        assert!(error.to_string().contains(
+            "refusing to replace non-empty StorageChangeSets at state-import block 10: 1 changes"
+        ), "unexpected reset error: {error}");
+
+        let account_jar = static_files
+            .get_segment_provider_for_block(StaticFileSegment::AccountChangeSets, block, None)
+            .unwrap();
+        let account_offsets = account_jar.read_changeset_offsets().unwrap().unwrap();
+        assert_eq!(account_offsets.len(), 1);
+        assert_eq!(account_offsets[0].num_changes(), 0);
+        assert_eq!(account_jar.rows(), 0);
+
+        let storage_jar = static_files
+            .get_segment_provider_for_block(StaticFileSegment::StorageChangeSets, block, None)
+            .unwrap();
+        let storage_offsets = storage_jar.read_changeset_offsets().unwrap().unwrap();
+        assert_eq!(storage_offsets.len(), 1);
+        assert_eq!(storage_offsets[0].num_changes(), 1);
+        assert_eq!(storage_jar.rows(), 1);
+    }
+
+    #[test]
+    fn snapshot_changeset_reset_rejects_pre_anchor_range() {
+        let block = 10;
+        let factory = create_test_provider_factory_with_chain_spec(MAINNET.clone());
+        factory.set_storage_settings_cache(StorageSettings::v2());
+        let static_files = factory.static_file_provider();
+
+        {
+            let mut writer =
+                static_files.get_writer(0, StaticFileSegment::AccountChangeSets).unwrap();
+            for current in 0..=block {
+                writer.append_account_changeset(Vec::new(), current).unwrap();
+            }
+        }
+        {
+            let mut writer =
+                static_files.get_writer(0, StaticFileSegment::StorageChangeSets).unwrap();
+            for current in 0..=block {
+                writer.append_storage_changeset(Vec::new(), current).unwrap();
+            }
+        }
+        static_files.commit().unwrap();
+        static_files.initialize_index().unwrap();
+
+        let error = reset_pre_snapshot_changeset_segments(&static_files, block).unwrap_err();
+        assert!(
+            error.to_string().contains("expected the sole range to be anchor-only"),
+            "unexpected reset error: {error}"
+        );
+
+        for segment in [StaticFileSegment::AccountChangeSets, StaticFileSegment::StorageChangeSets]
+        {
+            let range = static_files.get_lowest_range(segment).unwrap();
+            assert_eq!((range.start(), range.end()), (0, block));
+            assert_eq!(static_files.get_highest_static_file_block(segment), Some(block));
+            let jar = static_files.get_segment_provider_for_block(segment, block, None).unwrap();
+            assert_eq!(jar.read_changeset_offsets().unwrap().unwrap().len(), 11);
+            assert_eq!(jar.rows(), 0);
+        }
     }
 
     #[test]
