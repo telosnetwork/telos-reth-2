@@ -10,7 +10,7 @@ use reth_cli_util::allocator::tikv_jemalloc_sys as _;
 
 use clap::{Parser, Subcommand};
 use reth::{
-    cli::Cli,
+    cli::{Cli, Commands},
     rpc::builder::RethRpcModule,
     version::{default_reth_version_metadata, try_init_version_metadata, RethCliVersionConsts},
 };
@@ -29,7 +29,7 @@ use reth_node_telos::{
 };
 use reth_rpc_server_types::DefaultRpcModuleValidator;
 use reth_telos_rpc::TelosClient;
-use std::borrow::Cow;
+use std::{borrow::Cow, io::Write};
 use tracing::info;
 
 const MISSING_TELOS_EXECUTION_BACKEND: &str =
@@ -47,10 +47,7 @@ enum TelosCommands {
 impl ExtendedCommand for TelosCommands {
     fn execute(self, _runner: CliRunner) -> eyre::Result<()> {
         match self {
-            Self::BuildInfo => {
-                println!("{}", serde_json::to_string(&telos_build_info())?);
-                Ok(())
-            }
+            Self::BuildInfo => write_telos_build_info(std::io::stdout().lock()),
         }
     }
 }
@@ -61,6 +58,22 @@ fn telos_build_info() -> serde_json::Value {
         "execution_ready": TELOS_REVM_EXECUTION_READY,
         "rpc_replay_ready": TELOS_RPC_REPLAY_READY,
     })
+}
+
+fn write_telos_build_info(mut writer: impl Write) -> eyre::Result<()> {
+    serde_json::to_writer(&mut writer, &telos_build_info())?;
+    writeln!(writer)?;
+    Ok(())
+}
+
+fn is_broken_pipe(error: &eyre::Report) -> bool {
+    error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|error| error.kind() == std::io::ErrorKind::BrokenPipe) ||
+        error
+            .downcast_ref::<serde_json::Error>()
+            .and_then(serde_json::Error::io_error_kind)
+            .is_some_and(|kind| kind == std::io::ErrorKind::BrokenPipe)
 }
 
 fn telos_version_metadata(upstream: RethCliVersionConsts) -> RethCliVersionConsts {
@@ -132,14 +145,22 @@ fn main() {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
 
-    if let Err(err) =
-        Cli::<
-            TelosChainSpecParser,
-            TelosArgs,
-            DefaultRpcModuleValidator,
-            TelosCommands,
-        >::parse()
-        .run(async move |mut builder, telos_args| {
+    let cli =
+        Cli::<TelosChainSpecParser, TelosArgs, DefaultRpcModuleValidator, TelosCommands>::parse();
+
+    // Keep the build-info contract machine-readable even when the global log default writes to
+    // stdout. All other commands initialize tracing through `CliApp::run_with_components`.
+    if matches!(&cli.command, Commands::Ext(TelosCommands::BuildInfo)) {
+        if let Err(error) = write_telos_build_info(std::io::stdout().lock()) &&
+            !is_broken_pipe(&error)
+        {
+            eprintln!("Error: {error:?}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if let Err(err) = cli.run(async move |mut builder, telos_args| {
             info!(target: "reth::cli", "Launching Telos node");
             telos_args.validate()?;
             if enforce_telos_rpc_policy(
@@ -321,5 +342,18 @@ mod tests {
         assert_eq!(info["schema"], "telos-reth-build-info/v1");
         assert_eq!(info["execution_ready"], TELOS_REVM_EXECUTION_READY);
         assert_eq!(info["rpc_replay_ready"], TELOS_RPC_REPLAY_READY);
+    }
+
+    #[test]
+    fn build_info_output_is_exactly_one_json_line() {
+        let mut output = Vec::new();
+        write_telos_build_info(&mut output).unwrap();
+
+        assert_eq!(output.iter().filter(|byte| **byte == b'\n').count(), 1);
+        assert_eq!(output.last(), Some(&b'\n'));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&output).unwrap(),
+            telos_build_info()
+        );
     }
 }
