@@ -23,9 +23,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - machine: ubuntu-22
+          - machine: ubuntu-22-a
             runner: ubuntu-22.04
-          - machine: ubuntu-24
+          - machine: ubuntu-22-b
+            runner: ubuntu-22.04
+          - machine: ubuntu-24-a
+            runner: ubuntu-24.04
+          - machine: ubuntu-24-b
             runner: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -77,10 +81,21 @@ jobs:
           sha256sum output/telos-checkpoint-bootstrap output/telos-reth \
             | sed 's#  output/#  #' > checksum.sha256
           cat checksum.sha256
+          {
+            uname -a
+            nproc
+            lscpu
+            docker version
+            docker buildx version
+          } > build-host.txt
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: reproducible-${{ matrix.machine }}
-          path: checksum.sha256
+          path: |
+            build-host.txt
+            checksum.sha256
+            output/telos-checkpoint-bootstrap
+            output/telos-reth
           if-no-files-found: error
           retention-days: 2
 
@@ -100,5 +115,13 @@ jobs:
       - name: Require byte-identical binaries
         run: |
           test "${{ needs.build.result }}" = success
-          cmp checksums/reproducible-ubuntu-22/checksum.sha256 checksums/reproducible-ubuntu-24/checksum.sha256
-          cat checksums/reproducible-ubuntu-24/checksum.sha256
+          mapfile -t checksum_files < <(find checksums -name checksum.sha256 -type f | LC_ALL=C sort)
+          test "${#checksum_files[@]}" = 4
+          reference=${checksum_files[0]}
+          status=0
+          for candidate in "${checksum_files[@]}"; do
+            echo "== $candidate =="
+            cat "$candidate"
+            cmp "$reference" "$candidate" || status=1
+          done
+          exit "$status"
