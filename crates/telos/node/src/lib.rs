@@ -30,6 +30,7 @@ pub mod receipt;
 pub mod rpc;
 pub mod rpc_policy;
 pub mod sidecar;
+pub mod sidecar_schedule;
 pub mod startup;
 pub mod tree;
 pub mod types;

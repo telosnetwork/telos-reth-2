@@ -96,6 +96,7 @@ jobs:
             | jq -er '[.packages[] | select(.name == "telos-reth") | .version] | if length == 1 then .[0] else error("expected exactly one telos-reth package") end')
           ./target/debug/telos-reth --version | grep -F "$version"
           ./target/debug/telos-reth --help >/dev/null
+          ./target/debug/telos-reth telos-sidecar-schedule --help >/dev/null
           ./target/debug/telos-reth telos-build-info \
             | jq -e '
                 .schema == "telos-reth-build-info/v1" and

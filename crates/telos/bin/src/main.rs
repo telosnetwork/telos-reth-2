@@ -1,6 +1,8 @@
 //! Telos-reth binary entrypoint.
 #![allow(missing_docs)]
 
+mod sidecar_schedule;
+
 #[global_allocator]
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
@@ -29,6 +31,7 @@ use reth_node_telos::{
 };
 use reth_rpc_server_types::DefaultRpcModuleValidator;
 use reth_telos_rpc::TelosClient;
+use sidecar_schedule::TelosSidecarScheduleCommand;
 use std::{borrow::Cow, io::Write};
 use tracing::info;
 
@@ -42,12 +45,16 @@ enum TelosCommands {
     /// Print the machine-readable qualification gates compiled into this exact binary.
     #[command(name = "telos-build-info")]
     BuildInfo,
+    /// Verify a frozen Telos sidecar database and emit its gas-price schedule.
+    #[command(name = "telos-sidecar-schedule")]
+    SidecarSchedule(Box<TelosSidecarScheduleCommand>),
 }
 
 impl ExtendedCommand for TelosCommands {
-    fn execute(self, _runner: CliRunner) -> eyre::Result<()> {
+    fn execute(self, runner: CliRunner) -> eyre::Result<()> {
         match self {
             Self::BuildInfo => write_telos_build_info(std::io::stdout().lock()),
+            Self::SidecarSchedule(command) => (*command).execute(runner),
         }
     }
 }
@@ -152,6 +159,24 @@ fn main() {
     // stdout. All other commands initialize tracing through `CliApp::run_with_components`.
     if matches!(&cli.command, Commands::Ext(TelosCommands::BuildInfo)) {
         if let Err(error) = write_telos_build_info(std::io::stdout().lock()) &&
+            !is_broken_pipe(&error)
+        {
+            eprintln!("Error: {error:?}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    // The scanner's stdout is a qualification artifact. Run it before tracing is initialized so
+    // stdout contains exactly one compact JSON record and no log lines.
+    if matches!(&cli.command, Commands::Ext(TelosCommands::SidecarSchedule(_))) {
+        let Commands::Ext(TelosCommands::SidecarSchedule(command)) = cli.command else {
+            unreachable!("command shape was checked above")
+        };
+        let result = CliRunner::try_default_runtime()
+            .map_err(eyre::Report::from)
+            .and_then(|runner| (*command).execute(runner));
+        if let Err(error) = result &&
             !is_broken_pipe(&error)
         {
             eprintln!("Error: {error:?}");

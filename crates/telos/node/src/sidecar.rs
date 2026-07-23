@@ -354,7 +354,8 @@ pub enum TelosSidecarRemoveOutcome {
 }
 
 /// Durable canonical-coverage checkpoint advanced atomically with finalized fork pruning.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TelosFinalizedCoverage {
     /// Finalized canonical block covered by accepted sidecars.
     pub block_number: u64,
@@ -3297,7 +3298,7 @@ fn finalize_and_prune_with_transaction<TX: DbTx + DbTxMut>(
     })
 }
 
-fn finalized_coverage_from_transaction<TX: DbTx>(
+pub(crate) fn finalized_coverage_from_transaction<TX: DbTx>(
     tx: &TX,
 ) -> Result<Option<TelosFinalizedCoverage>, TelosSidecarError> {
     let entries = tx.entries::<TelosSidecarFinalizedCoverage>().map_err(database_error)?;
@@ -3538,7 +3539,7 @@ fn validate_record_index<TX: DbTx>(
     }
 }
 
-fn get_record_by_hash_from_transaction<TX: DbTx>(
+pub(crate) fn get_record_by_hash_from_transaction<TX: DbTx>(
     tx: &TX,
     chain: TelosChainIdentity,
     block_hash: B256,

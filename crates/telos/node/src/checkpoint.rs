@@ -415,6 +415,14 @@ impl TelosCheckpointAudit {
 
     /// Loads and verifies the deterministic completion record next to a manifest.
     pub fn load_completed(manifest_path: &Path) -> eyre::Result<TelosCheckpointManifest> {
+        Ok(Self::load_completed_with_sha256(manifest_path)?.0)
+    }
+
+    /// Loads and verifies the deterministic completion record, returning the exact manifest
+    /// digest from the same bounded read used for audit validation.
+    pub fn load_completed_with_sha256(
+        manifest_path: &Path,
+    ) -> eyre::Result<(TelosCheckpointManifest, B256)> {
         let (manifest, manifest_sha256) = TelosCheckpointManifest::load(manifest_path)?;
         manifest.validate()?;
 
@@ -437,7 +445,7 @@ impl TelosCheckpointAudit {
                 manifest_path.display()
             );
         }
-        Ok(manifest)
+        Ok((manifest, manifest_sha256))
     }
 }
 
