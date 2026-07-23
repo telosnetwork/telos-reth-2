@@ -26,6 +26,9 @@ HISTORY_TRANSACTION_HASH = (
     "0x411b585bf0b052f527b1924f500686d4b7c7cab9da18f81cbacfa4405bd15819"
 )
 COMMON_HASH = "0x" + "ab" * 32
+HISTORY_STORAGE_ADDRESS = "0xd102ce6a4db07d247fcc28f366a623df0938ca9e"
+HISTORY_STORAGE_SLOT = "0x2"
+HISTORY_STORAGE_VALUE = "0x" + "00" * 31 + "12"
 
 EXPECTED_METRICS = {
     "telos_rpc_router_readiness",
@@ -56,6 +59,9 @@ def router_config(listen: str = "127.0.0.1:8645") -> str:
             f"TELOS_RPC_ROUTER_HISTORY_PROBE_ADDRESS={HISTORY_ADDRESS}",
             f"TELOS_RPC_ROUTER_HISTORY_PROBE_BALANCE={HISTORY_BALANCE}",
             f"TELOS_RPC_ROUTER_HISTORY_PROBE_TRANSACTION_HASH={HISTORY_TRANSACTION_HASH}",
+            f"TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_ADDRESS={HISTORY_STORAGE_ADDRESS}",
+            f"TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_SLOT={HISTORY_STORAGE_SLOT}",
+            f"TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_VALUE={HISTORY_STORAGE_VALUE}",
             "TELOS_RPC_ROUTER_MAX_HEAD_LAG=4",
             "",
         )
@@ -73,6 +79,9 @@ def ready_response(chain_id: int = 40) -> dict[str, object]:
         "history_probe_address": HISTORY_ADDRESS,
         "history_probe_balance": HISTORY_BALANCE,
         "history_probe_transaction_hash": HISTORY_TRANSACTION_HASH,
+        "history_storage_probe_address": HISTORY_STORAGE_ADDRESS,
+        "history_storage_probe_slot": HISTORY_STORAGE_SLOT,
+        "history_storage_probe_value": HISTORY_STORAGE_VALUE,
         "live_head": 500,
         "archive_head": 498,
         "common_head": 498,
@@ -294,6 +303,22 @@ printf '%s' "${ROUTER_TEST_HTTP_STATUS:-200}"
     assert metrics["telos_rpc_router_readiness"] == 0
     assert metrics["telos_rpc_router_readiness_last_success_timestamp_seconds"] == previous_success
 
+    invalid_storage_response = ready_response()
+    invalid_storage_response["history_storage_probe_value"] = "0x" + "01" * 32
+    response_path.write_text(json.dumps(invalid_storage_response), encoding="utf-8")
+    result = subprocess.run(
+        [str(test_script), "mainnet"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert result.returncode != 0
+    assert "history storage probe value differs" in result.stderr
+    metrics = parse_metrics(metrics_file)
+    assert metrics["telos_rpc_router_readiness"] == 0
+    assert metrics["telos_rpc_router_readiness_last_success_timestamp_seconds"] == previous_success
+
     response_path.write_text(json.dumps({"ready": False}), encoding="utf-8")
     result = subprocess.run(
         [str(test_script), "mainnet"],
@@ -309,6 +334,22 @@ printf '%s' "${ROUTER_TEST_HTTP_STATUS:-200}"
     assert metrics["telos_rpc_router_readiness_last_success_timestamp_seconds"] == previous_success
 
     curl_marker.unlink()
+    invalid_storage_config = router_config().replace(
+        f"TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_SLOT={HISTORY_STORAGE_SLOT}",
+        "TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_SLOT=0x",
+    )
+    config_path.write_text(invalid_storage_config, encoding="utf-8")
+    result = subprocess.run(
+        [str(test_script), "mainnet"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert result.returncode != 0
+    assert "TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_SLOT is malformed" in result.stderr
+    assert not curl_marker.exists()
+
     config_path.write_text(router_config(listen="0.0.0.0:8645"), encoding="utf-8")
     result = subprocess.run(
         [str(test_script), "mainnet"],

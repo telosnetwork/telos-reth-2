@@ -54,6 +54,15 @@ struct Command {
     /// Transaction whose receipt must belong to the retained-history probe block.
     #[arg(long, env = "TELOS_RPC_ROUTER_HISTORY_PROBE_TRANSACTION_HASH")]
     history_probe_transaction_hash: String,
+    /// Contract whose storage is pinned at the retained-history probe block.
+    #[arg(long, env = "TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_ADDRESS")]
+    history_storage_probe_address: String,
+    /// Storage key pinned for `history-storage-probe-address`.
+    #[arg(long, env = "TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_SLOT")]
+    history_storage_probe_slot: String,
+    /// Exact 32-byte value expected at `history-storage-probe-slot`.
+    #[arg(long, env = "TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_VALUE")]
+    history_storage_probe_value: String,
     /// Maximum allowed height difference between live and archive backends.
     #[arg(long, env = "TELOS_RPC_ROUTER_MAX_HEAD_LAG", default_value_t = 4)]
     max_head_lag: u64,
@@ -90,6 +99,9 @@ struct State {
     history_probe_address: Arc<str>,
     history_probe_balance: Arc<str>,
     history_probe_transaction_hash: Arc<str>,
+    history_storage_probe_address: Arc<str>,
+    history_storage_probe_slot: Arc<str>,
+    history_storage_probe_value: Arc<str>,
     max_head_lag: u64,
     max_request_bytes: usize,
     request_timeout: Duration,
@@ -134,6 +146,9 @@ async fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
         history_probe_address: command.history_probe_address.into(),
         history_probe_balance: command.history_probe_balance.into(),
         history_probe_transaction_hash: command.history_probe_transaction_hash.into(),
+        history_storage_probe_address: command.history_storage_probe_address.into(),
+        history_storage_probe_slot: command.history_storage_probe_slot.into(),
+        history_storage_probe_value: command.history_storage_probe_value.into(),
         max_head_lag: command.max_head_lag,
         max_request_bytes: command.max_request_bytes,
         request_timeout: Duration::from_millis(command.request_timeout_ms),
@@ -310,6 +325,9 @@ async fn readiness_response(state: &State) -> Result<Value, telos_rpc_router::Ro
             history_probe_address: &state.history_probe_address,
             history_probe_balance: &state.history_probe_balance,
             history_probe_transaction_hash: &state.history_probe_transaction_hash,
+            history_storage_probe_address: &state.history_storage_probe_address,
+            history_storage_probe_slot: &state.history_storage_probe_slot,
+            history_storage_probe_value: &state.history_storage_probe_value,
             max_head_lag: state.max_head_lag,
         },
     )
@@ -359,6 +377,9 @@ mod tests {
     const PROBE_ADDRESS: &str = "0x1a7883121285dfe08fb89763d084d5c7966dcf92";
     const PROBE_TRANSACTION: &str =
         "0x411b585bf0b052f527b1924f500686d4b7c7cab9da18f81cbacfa4405bd15819";
+    const STORAGE_PROBE_ADDRESS: &str = "0xd102ce6a4db07d247fcc28f366a623df0938ca9e";
+    const STORAGE_PROBE_VALUE: &str =
+        "0x0000000000000000000000000000000000000000000000000000000000000012";
 
     fn command() -> Command {
         Command::try_parse_from([
@@ -383,6 +404,12 @@ mod tests {
             "0x23b0c973e84998e4f",
             "--history-probe-transaction-hash",
             PROBE_TRANSACTION,
+            "--history-storage-probe-address",
+            STORAGE_PROBE_ADDRESS,
+            "--history-storage-probe-slot",
+            "0x2",
+            "--history-storage-probe-value",
+            STORAGE_PROBE_VALUE,
             "--max-batch-len",
             "32",
             "--max-connections",
@@ -400,6 +427,9 @@ mod tests {
         assert_eq!(command.history_probe_address, PROBE_ADDRESS);
         assert_eq!(command.history_probe_balance, "0x23b0c973e84998e4f");
         assert_eq!(command.history_probe_transaction_hash, PROBE_TRANSACTION);
+        assert_eq!(command.history_storage_probe_address, STORAGE_PROBE_ADDRESS);
+        assert_eq!(command.history_storage_probe_slot, "0x2");
+        assert_eq!(command.history_storage_probe_value, STORAGE_PROBE_VALUE);
         assert_eq!(command.max_batch_len, 32);
         assert_eq!(command.max_connections, 128);
         assert_eq!(command.request_timeout_ms, 2500);

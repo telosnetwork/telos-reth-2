@@ -29,6 +29,12 @@ The retained-history readiness probe is pre-Savanna EVM block `423015017`, hash
 That probe corresponds to authenticated native block `423015053`, using the established native/EVM
 delta of 36, and is 55,414,181 native blocks before SAVANNA activation at native block
 `478429234`.
+Its nonzero storage witness is WTLOS contract
+`0xd102ce6a4db07d247fcc28f366a623df0938ca9e`, slot `0x2`, value
+`0x0000000000000000000000000000000000000000000000000000000000000012`. The
+host-key-verified incumbent loopback and `https://rpc.telos.net/evm` independently returned the
+same result at the configured EIP-1898 block hash; the canonical JSON-RPC response SHA-256 is
+`d697207a9137973f2dd578ed6c157f1f6c07e644146c5e6a101e73fbeebd14ea`.
 
 At startup and on every `GET /readyz`, the router fails closed unless:
 
@@ -38,6 +44,8 @@ At startup and on every `GET /readyz`, the router fails closed unless:
 - the retained incumbent returns the pinned transaction receipt with the exact transaction, block
   number, and block hash;
 - the retained incumbent returns the pinned empty address-log result at that block;
+- the public router path returns the pinned balance through an EIP-1898 canonical block-hash
+  reference and synthesizes the configured nonzero storage witness through `eth_getStorageAt`;
 - their heads differ by no more than the configured lag; and
 - both backends return the same hash at their common head.
 
@@ -66,6 +74,10 @@ compact JSON response to 64 MiB for one client request under a 2 GiB service mem
 Request-body collection and each backend call have 30-second deadlines, including time spent
 waiting for a limiter permit. Treat those as upper bounds; the external proxy should impose
 tighter per-method and client limits based on measured production traffic.
+Historical `eth_getStorageValues` is capped at the same 1,024 aggregate slots as Reth and at 1,024
+request-map addresses. The router additionally permits no more than 1,024 synthesized archive
+calls across an entire top-level request or batch, reserves that allowance before making calls,
+and requires each individual fan-out to finish within one router backend deadline.
 
 | Request class | Backend |
 | --- | --- |
@@ -73,6 +85,8 @@ tighter per-method and client limits based on measured production traffic.
 | Explicit block number below `479294328` or `earliest` | retained incumbent |
 | Explicit block number at or above `479294328`, or a live block tag | sparse live v2 |
 | Block/transaction/receipt lookup by hash | sparse live v2, then incumbent only when v2 returns a null result |
+| State or call method with a block-hash selector | retained incumbent directly |
+| Historical `eth_getStorageValues` | validated, bounded incumbent `eth_getStorageAt` fan-out with slot order preserved |
 | `eth_getLogs` wholly below or above the boundary | matching backend |
 | `eth_getLogs` spanning the boundary | two non-overlapping requests, validated and merged |
 | Filter creation, polling, log retrieval, and removal | retained incumbent for the complete ID lifecycle |
@@ -82,6 +96,13 @@ Filter IDs are backend-local, and fee-history ranges may cross the sparse bounda
 therefore remains required for those methods even when a request concerns recent blocks. Backend
 transport failures, malformed responses, ID mismatches, oversized responses, and inconsistent log
 ranges return a router error; they do not trigger an unsafe transport fallback.
+The retained incumbent does not expose `eth_getStorageValues`, so the router implements that
+historical method from bounded `eth_getStorageAt` calls. It rejects empty or malformed request
+maps, duplicate addresses after normalization, more than 1,024 addresses or total slots, storage
+keys outside 1–64 hexadecimal digits, and non-32-byte storage results. An all-empty slot map makes
+one bounded `eth_getBalance` call for its first address at the same block reference, so an unknown
+historical hash cannot produce a false success. A well-formed backend JSON-RPC error is returned
+with the original client request ID; malformed backend error objects fail as router errors.
 
 ## Install and run side by side
 

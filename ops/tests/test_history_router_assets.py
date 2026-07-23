@@ -40,6 +40,9 @@ required_environment = {
     "TELOS_RPC_ROUTER_HISTORY_PROBE_ADDRESS",
     "TELOS_RPC_ROUTER_HISTORY_PROBE_BALANCE",
     "TELOS_RPC_ROUTER_HISTORY_PROBE_TRANSACTION_HASH",
+    "TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_ADDRESS",
+    "TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_SLOT",
+    "TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_VALUE",
     "TELOS_RPC_ROUTER_MAX_HEAD_LAG",
     "TELOS_RPC_ROUTER_MAX_REQUEST_BYTES",
     "TELOS_RPC_ROUTER_MAX_RESPONSE_BYTES",
@@ -101,6 +104,13 @@ assert router_environment["TELOS_RPC_ROUTER_HISTORY_PROBE_BALANCE"] == "0x23b0c9
 assert router_environment["TELOS_RPC_ROUTER_HISTORY_PROBE_TRANSACTION_HASH"] == (
     "0x411b585bf0b052f527b1924f500686d4b7c7cab9da18f81cbacfa4405bd15819"
 )
+assert router_environment["TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_ADDRESS"] == (
+    "0xd102ce6a4db07d247fcc28f366a623df0938ca9e"
+)
+assert router_environment["TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_SLOT"] == "0x2"
+assert router_environment["TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_VALUE"] == (
+    "0x0000000000000000000000000000000000000000000000000000000000000012"
+)
 assert router_environment["TELOS_RPC_ROUTER_MAX_BATCH_LEN"] == "64"
 assert router_environment["TELOS_RPC_ROUTER_MAX_CONNECTIONS"] == "256"
 assert router_environment["TELOS_RPC_ROUTER_MAX_INFLIGHT"] == "16"
@@ -116,6 +126,22 @@ assert re.fullmatch(
 )
 assert re.fullmatch(
     r"0x(?:0|[1-9a-f][0-9a-f]*)", router_environment["TELOS_RPC_ROUTER_HISTORY_PROBE_BALANCE"]
+)
+assert re.fullmatch(
+    r"0x[0-9a-f]{40}",
+    router_environment["TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_ADDRESS"],
+)
+assert re.fullmatch(
+    r"0x[0-9a-f]{1,64}",
+    router_environment["TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_SLOT"],
+)
+assert re.fullmatch(
+    r"0x[0-9a-f]{64}",
+    router_environment["TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_VALUE"],
+)
+assert (
+    "d697207a9137973f2dd578ed6c157f1f6c07e644146c5e6a101e73fbeebd14ea"
+    in read("ops/config/mainnet-router.env.example")
 )
 
 unit = read("ops/systemd/telos-rpc-router@.service")

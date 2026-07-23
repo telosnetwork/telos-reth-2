@@ -2,8 +2,9 @@
 
 use futures::{future::join_all, StreamExt};
 use reqwest::{redirect::Policy, Client, Url};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::{
+    collections::BTreeSet,
     io::{self, Write},
     net::IpAddr,
     sync::{
@@ -20,6 +21,9 @@ const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 const ROUTER_ERROR: i64 = -32070;
 const RESPONSE_LIMIT_MESSAGE: &str = "response exceeds configured size limit";
+// Keep this aligned with reth_rpc_server_types::constants::DEFAULT_MAX_STORAGE_VALUES_SLOTS.
+const MAX_STORAGE_VALUES_SLOTS: usize = 1024;
+const MAX_ARCHIVE_STORAGE_CALLS_PER_DISPATCH: usize = MAX_STORAGE_VALUES_SLOTS;
 
 /// Immutable chain boundary and resource limits for the history router.
 #[derive(Clone, Debug)]
@@ -149,11 +153,17 @@ struct Backend {
 #[derive(Debug)]
 struct ResponseBudget {
     remaining: AtomicUsize,
+    archive_storage_calls_remaining: AtomicUsize,
 }
 
 impl ResponseBudget {
     const fn new(limit: usize) -> Self {
-        Self { remaining: AtomicUsize::new(limit) }
+        Self {
+            remaining: AtomicUsize::new(limit),
+            archive_storage_calls_remaining: AtomicUsize::new(
+                MAX_ARCHIVE_STORAGE_CALLS_PER_DISPATCH,
+            ),
+        }
     }
 
     fn can_fit(&self, length: u64) -> bool {
@@ -164,6 +174,14 @@ impl ResponseBudget {
         self.remaining
             .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
                 remaining.checked_sub(length)
+            })
+            .is_ok()
+    }
+
+    fn reserve_archive_storage_calls(&self, calls: usize) -> bool {
+        self.archive_storage_calls_remaining
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                remaining.checked_sub(calls)
             })
             .is_ok()
     }
@@ -326,6 +344,14 @@ impl RpcRouter {
     /// Handles one JSON-RPC request or batch. `None` is returned for notifications-only input.
     pub async fn dispatch(&self, payload: Value) -> Option<Value> {
         let budget = Arc::new(ResponseBudget::new(self.config.max_response_bytes));
+        self.dispatch_with_budget(payload, budget).await
+    }
+
+    async fn dispatch_with_budget(
+        &self,
+        payload: Value,
+        budget: Arc<ResponseBudget>,
+    ) -> Option<Value> {
         let response = match payload {
             Value::Array(requests) if requests.is_empty() => {
                 Some(error_response(Value::Null, INVALID_REQUEST, "empty JSON-RPC batch"))
@@ -430,6 +456,9 @@ impl RpcRouter {
         match plan {
             RoutePlan::Live => self.live.call(&request, expects_response, budget).await,
             RoutePlan::Archive => self.archive.call(&request, expects_response, budget).await,
+            RoutePlan::ArchiveStorageValues(plan) => {
+                self.execute_archive_storage_values(&request, plan, expects_response, budget).await
+            }
             RoutePlan::LiveThenArchive => {
                 let response = self.live.call(&request, expects_response, budget).await?;
                 if expects_response && response.as_ref().is_some_and(has_null_result) {
@@ -442,6 +471,198 @@ impl RpcRouter {
                 self.execute_logs(request, plan, expects_response, budget).await
             }
         }
+    }
+
+    async fn execute_archive_storage_values(
+        &self,
+        request: &Value,
+        plan: StorageValuesPlan,
+        expects_response: bool,
+        budget: &ResponseBudget,
+    ) -> Result<Option<Value>, RouterError> {
+        let backend_calls = plan.total_slots.max(1);
+        if !budget.reserve_archive_storage_calls(backend_calls) {
+            return Err(RouterError::Backend {
+                backend: "archive",
+                message: "aggregate historical storage fan-out exceeds 1024 backend calls"
+                    .to_owned(),
+            })
+        }
+        if plan.total_slots == 0 {
+            return self
+                .execute_archive_empty_storage_values(request, plan, expects_response, budget)
+                .await
+        }
+
+        let original_id = request.get("id").cloned().unwrap_or(Value::Null);
+        let mut grouped = plan
+            .entries
+            .iter()
+            .map(|entry| (entry.address.clone(), vec![Value::Null; entry.slots.len()]))
+            .collect::<Vec<_>>();
+
+        let archive = &self.archive;
+        let concurrency = self.config.max_inflight;
+        let block = plan.block;
+        let calls = plan
+            .entries
+            .iter()
+            .enumerate()
+            .flat_map(|(entry_index, entry)| {
+                entry.slots.iter().enumerate().map(move |(slot_index, slot)| {
+                    (entry_index, slot_index, entry.address.clone(), slot.clone())
+                })
+            })
+            .collect::<Vec<_>>();
+        let responses = tokio::time::timeout(self.config.backend_timeout, async move {
+            futures::stream::iter(calls.into_iter().enumerate())
+                .map(move |(flat_index, (entry_index, slot_index, address, slot))| {
+                    let block = block.clone();
+                    async move {
+                        let mut storage_request = json!({
+                            "jsonrpc": JSONRPC_VERSION,
+                            "method": "eth_getStorageAt",
+                            "params": [address, slot],
+                        });
+                        if let Some(block) = block {
+                            storage_request
+                                .get_mut("params")
+                                .and_then(Value::as_array_mut)
+                                .expect("storage request has positional params")
+                                .push(block);
+                        }
+                        if expects_response {
+                            storage_request
+                                .as_object_mut()
+                                .expect("storage request is an object")
+                                .insert(
+                                    "id".to_owned(),
+                                    Value::String(format!("telos-router-storage-{flat_index}")),
+                                );
+                        }
+                        (
+                            flat_index,
+                            entry_index,
+                            slot_index,
+                            archive.call(&storage_request, expects_response, budget).await,
+                        )
+                    }
+                })
+                .buffer_unordered(concurrency)
+                .collect::<Vec<_>>()
+                .await
+        })
+        .await
+        .map_err(|_| RouterError::Backend {
+            backend: "archive",
+            message: "storage values request timed out".to_owned(),
+        })?;
+
+        let mut responses = responses;
+        responses.sort_unstable_by_key(|(flat_index, ..)| *flat_index);
+        for (_, entry_index, slot_index, response) in responses {
+            let response = response?;
+            if !expects_response {
+                if response.is_some() {
+                    return Err(RouterError::Backend {
+                        backend: "archive",
+                        message: "storage notification returned a response".to_owned(),
+                    })
+                }
+                continue
+            }
+            let response = response.ok_or_else(|| missing_response("archive"))?;
+            if let Some(error) = copied_backend_error(&response, &original_id, "archive")? {
+                return Ok(Some(error))
+            }
+            let value = response.get("result").and_then(Value::as_str).ok_or_else(|| {
+                RouterError::Backend {
+                    backend: "archive",
+                    message: "eth_getStorageAt result is not a storage value".to_owned(),
+                }
+            })?;
+            let value = normalize_storage_value(value)?;
+            grouped[entry_index].1[slot_index] = Value::String(value);
+        }
+        if !expects_response {
+            return Ok(None)
+        }
+
+        let mut result = Map::new();
+        for (address, values) in grouped {
+            if values.iter().any(Value::is_null) {
+                return Err(RouterError::Backend {
+                    backend: "archive",
+                    message: "storage values result is incomplete".to_owned(),
+                })
+            }
+            result.insert(address, Value::Array(values));
+        }
+        Ok(Some(json!({
+            "jsonrpc": JSONRPC_VERSION,
+            "id": original_id,
+            "result": result,
+        })))
+    }
+
+    async fn execute_archive_empty_storage_values(
+        &self,
+        request: &Value,
+        plan: StorageValuesPlan,
+        expects_response: bool,
+        budget: &ResponseBudget,
+    ) -> Result<Option<Value>, RouterError> {
+        let original_id = request.get("id").cloned().unwrap_or(Value::Null);
+        let first = plan
+            .entries
+            .first()
+            .expect("validated storage values request has at least one address");
+        let mut probe = json!({
+            "jsonrpc": JSONRPC_VERSION,
+            "method": "eth_getBalance",
+            "params": [first.address.as_str()],
+        });
+        if let Some(block) = &plan.block {
+            probe
+                .get_mut("params")
+                .and_then(Value::as_array_mut)
+                .expect("balance probe has positional params")
+                .push(block.clone());
+        }
+        if expects_response {
+            probe.as_object_mut().expect("balance probe is an object").insert(
+                "id".to_owned(),
+                Value::String("telos-router-storage-empty-probe".to_owned()),
+            );
+        }
+        let response = self.archive.call(&probe, expects_response, budget).await?;
+        if !expects_response {
+            return Ok(None)
+        }
+        let response = response.ok_or_else(|| missing_response("archive"))?;
+        if let Some(error) = copied_backend_error(&response, &original_id, "archive")? {
+            return Ok(Some(error))
+        }
+        let balance =
+            response.get("result").and_then(Value::as_str).ok_or_else(|| RouterError::Backend {
+                backend: "archive",
+                message: "empty storage-map balance probe result is not a quantity".to_owned(),
+            })?;
+        validate_unbounded_quantity(balance).map_err(|_| RouterError::Backend {
+            backend: "archive",
+            message: "empty storage-map balance probe result is not a valid quantity".to_owned(),
+        })?;
+
+        let result = plan
+            .entries
+            .into_iter()
+            .map(|entry| (entry.address, Value::Array(Vec::new())))
+            .collect::<Map<_, _>>();
+        Ok(Some(json!({
+            "jsonrpc": JSONRPC_VERSION,
+            "id": original_id,
+            "result": result,
+        })))
     }
 
     async fn execute_logs(
@@ -543,10 +764,38 @@ fn validate_backend_response(response: &Value, expected_id: &Value) -> Result<()
     if object.contains_key("result") == object.contains_key("error") {
         return Err("backend response must contain exactly one of result or error")
     }
-    if object.get("error").is_some_and(|error| !error.is_object()) {
-        return Err("backend response error is not an object")
+    if let Some(error) = object.get("error") {
+        validate_backend_error(error)?;
     }
     Ok(())
+}
+
+fn validate_backend_error(error: &Value) -> Result<(), &'static str> {
+    let Some(error) = error.as_object() else {
+        return Err("backend response error is not an object")
+    };
+    if error.get("code").and_then(Value::as_i64).is_none() {
+        return Err("backend response error code is not an integer")
+    }
+    if error.get("message").and_then(Value::as_str).is_none() {
+        return Err("backend response error message is not a string")
+    }
+    Ok(())
+}
+
+fn copied_backend_error(
+    response: &Value,
+    original_id: &Value,
+    backend: &'static str,
+) -> Result<Option<Value>, RouterError> {
+    let Some(error) = response.get("error") else { return Ok(None) };
+    validate_backend_error(error)
+        .map_err(|message| RouterError::Backend { backend, message: message.to_owned() })?;
+    Ok(Some(json!({
+        "jsonrpc": JSONRPC_VERSION,
+        "id": original_id,
+        "error": error,
+    })))
 }
 
 fn has_null_result(response: &Value) -> bool {
@@ -622,6 +871,7 @@ fn encoded_json_len(value: &Value) -> usize {
 enum RoutePlan {
     Live,
     Archive,
+    ArchiveStorageValues(StorageValuesPlan),
     LiveThenArchive,
     Logs(LogsPlan),
 }
@@ -646,6 +896,19 @@ enum BlockRef {
     Earliest,
     LiveTag,
     Hash,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StorageValuesPlan {
+    entries: Vec<StorageValuesEntry>,
+    block: Option<Value>,
+    total_slots: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StorageValuesEntry {
+    address: String,
+    slots: Vec<String>,
 }
 
 fn route_plan(method: &str, params: &Value, live_start: u64) -> Result<RoutePlan, RouteError> {
@@ -722,15 +985,18 @@ fn route_plan(method: &str, params: &Value, live_start: u64) -> Result<RoutePlan
         "eth_getBalance" |
             "eth_getTransactionCount" |
             "eth_getCode" |
-            "eth_getStorageValues" |
             "eth_call" |
             "eth_estimateGas"
     ) {
-        return route_optional_at(params.get(1), live_start)
+        return route_optional_state_at(params.get(1), live_start)
+    }
+
+    if method == "eth_getStorageValues" {
+        return route_storage_values(params, live_start)
     }
 
     if method == "eth_getStorageAt" {
-        return route_optional_at(params.get(2), live_start)
+        return route_optional_state_at(params.get(2), live_start)
     }
 
     Err(RouteError::MethodNotFound)
@@ -746,11 +1012,81 @@ fn route_at(value: Option<&Value>, live_start: u64) -> Result<RoutePlan, RouteEr
     }
 }
 
-fn route_optional_at(value: Option<&Value>, live_start: u64) -> Result<RoutePlan, RouteError> {
+fn route_optional_state_at(
+    value: Option<&Value>,
+    live_start: u64,
+) -> Result<RoutePlan, RouteError> {
     match value {
-        Some(value) => route_at(Some(value), live_start),
+        Some(value) => match parse_block_ref(value)? {
+            BlockRef::Number(number) if number < live_start => Ok(RoutePlan::Archive),
+            BlockRef::Earliest | BlockRef::Hash => Ok(RoutePlan::Archive),
+            BlockRef::Number(_) | BlockRef::LiveTag => Ok(RoutePlan::Live),
+        },
         None => Ok(RoutePlan::Live),
     }
+}
+
+fn route_storage_values(params: &[Value], live_start: u64) -> Result<RoutePlan, RouteError> {
+    let plan = parse_storage_values_plan(params)?;
+    match route_optional_state_at(params.get(1), live_start)? {
+        RoutePlan::Archive => Ok(RoutePlan::ArchiveStorageValues(plan)),
+        RoutePlan::Live => Ok(RoutePlan::Live),
+        _ => unreachable!("state routing returns only live or archive"),
+    }
+}
+
+fn parse_storage_values_plan(params: &[Value]) -> Result<StorageValuesPlan, RouteError> {
+    if !(1..=2).contains(&params.len()) {
+        return Err(RouteError::InvalidParams(
+            "eth_getStorageValues requires requests and an optional block reference",
+        ))
+    }
+    let requests = params
+        .first()
+        .and_then(Value::as_object)
+        .ok_or(RouteError::InvalidParams("eth_getStorageValues requests must be an object"))?;
+    if requests.is_empty() {
+        return Err(RouteError::InvalidParams("eth_getStorageValues requests must not be empty"))
+    }
+    if requests.len() > MAX_STORAGE_VALUES_SLOTS {
+        return Err(RouteError::InvalidParams("eth_getStorageValues exceeds the 1024 address limit"))
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut entries = Vec::with_capacity(requests.len());
+    let mut total_slots = 0usize;
+    for (address, slots) in requests {
+        parse_address(address)?;
+        let address = address.to_ascii_lowercase();
+        if !seen.insert(address.clone()) {
+            return Err(RouteError::InvalidParams(
+                "eth_getStorageValues contains duplicate normalized addresses",
+            ))
+        }
+        let slots = slots.as_array().ok_or(RouteError::InvalidParams(
+            "eth_getStorageValues address values must be slot arrays",
+        ))?;
+        total_slots = total_slots.checked_add(slots.len()).ok_or(RouteError::InvalidParams(
+            "eth_getStorageValues exceeds the total slot limit",
+        ))?;
+        if total_slots > MAX_STORAGE_VALUES_SLOTS {
+            return Err(RouteError::InvalidParams(
+                "eth_getStorageValues exceeds the 1024 total slot limit",
+            ))
+        }
+        let slots = slots
+            .iter()
+            .map(|slot| {
+                let slot = slot.as_str().ok_or(RouteError::InvalidParams(
+                    "eth_getStorageValues slots must be strings",
+                ))?;
+                validate_storage_key(slot)?;
+                Ok(slot.to_owned())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        entries.push(StorageValuesEntry { address, slots });
+    }
+    Ok(StorageValuesPlan { entries, block: params.get(1).cloned(), total_slots })
 }
 
 fn parse_block_ref(value: &Value) -> Result<BlockRef, RouteError> {
@@ -806,6 +1142,40 @@ fn parse_address(value: &str) -> Result<(), RouteError> {
         return Err(RouteError::InvalidParams("address must contain exactly 20 bytes"))
     }
     Ok(())
+}
+
+fn validate_storage_key(value: &str) -> Result<(), RouteError> {
+    let digits = value
+        .strip_prefix("0x")
+        .ok_or(RouteError::InvalidParams("storage key must be 0x-prefixed"))?;
+    if digits.is_empty() ||
+        digits.len() > 64 ||
+        !digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(RouteError::InvalidParams(
+            "storage key must contain between 1 and 64 hexadecimal digits",
+        ))
+    }
+    Ok(())
+}
+
+fn validate_storage_value(value: &str) -> Result<(), RouteError> {
+    let digits = value
+        .strip_prefix("0x")
+        .ok_or(RouteError::InvalidParams("storage value must be 0x-prefixed"))?;
+    if digits.len() != 64 || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(RouteError::InvalidParams("storage value must contain exactly 32 bytes"))
+    }
+    Ok(())
+}
+
+fn normalize_storage_value(value: &str) -> Result<String, RouterError> {
+    validate_storage_value(value).map_err(|_| RouterError::Backend {
+        backend: "archive",
+        message: "eth_getStorageAt result is not exactly 32 bytes".to_owned(),
+    })?;
+    let digits = value.strip_prefix("0x").expect("validated storage value prefix");
+    Ok(format!("0x{}", digits.to_ascii_lowercase()))
 }
 
 fn validate_unbounded_quantity(value: &str) -> Result<(), RouteError> {
@@ -1059,6 +1429,12 @@ pub struct ReadinessConfig<'a> {
     pub history_probe_balance: &'a str,
     /// Transaction whose receipt must belong to the retained-history probe block.
     pub history_probe_transaction_hash: &'a str,
+    /// Contract whose storage is pinned at the retained-history probe block.
+    pub history_storage_probe_address: &'a str,
+    /// Storage key pinned for `history_storage_probe_address`.
+    pub history_storage_probe_slot: &'a str,
+    /// Exact 32-byte value expected at `history_storage_probe_slot`.
+    pub history_storage_probe_value: &'a str,
     /// Maximum allowed height difference between the two backends.
     pub max_head_lag: u64,
 }
@@ -1076,6 +1452,9 @@ pub async fn readiness(
         history_probe_address,
         history_probe_balance,
         history_probe_transaction_hash,
+        history_storage_probe_address,
+        history_storage_probe_slot,
+        history_storage_probe_value,
         max_head_lag,
     } = readiness;
     parse_hash(anchor_hash).map_err(|_| {
@@ -1097,12 +1476,25 @@ pub async fn readiness(
             "configured history probe transaction hash is not 32 bytes".to_owned(),
         )
     })?;
+    parse_address(history_storage_probe_address).map_err(|_| {
+        RouterError::Configuration(
+            "configured history storage probe address is not 20 bytes".to_owned(),
+        )
+    })?;
+    validate_storage_key(history_storage_probe_slot).map_err(|_| {
+        RouterError::Configuration("configured history storage probe slot is invalid".to_owned())
+    })?;
+    validate_storage_value(history_storage_probe_value).map_err(|_| {
+        RouterError::Configuration(
+            "configured history storage probe value is not 32 bytes".to_owned(),
+        )
+    })?;
     if history_probe_number >= router.config.live_history_start {
         return Err(RouterError::Configuration(
             "history probe must be below the live history boundary".to_owned(),
         ))
     }
-    let budget = ResponseBudget::new(router.config.max_response_bytes);
+    let budget = Arc::new(ResponseBudget::new(router.config.max_response_bytes));
     let history_probe_quantity = format!("0x{history_probe_number:x}");
     let chain_request = json!({
         "jsonrpc": JSONRPC_VERSION,
@@ -1144,6 +1536,24 @@ pub async fn readiness(
             "address": history_probe_address,
         }],
     });
+    let history_hash_reference = json!({
+        "blockHash": history_probe_hash,
+        "requireCanonical": true,
+    });
+    let routed_history_balance_request = json!({
+        "jsonrpc": JSONRPC_VERSION,
+        "id": "routed-history-balance",
+        "method": "eth_getBalance",
+        "params": [history_probe_address, history_hash_reference.clone()],
+    });
+    let routed_history_storage_request = json!({
+        "jsonrpc": JSONRPC_VERSION,
+        "id": "routed-history-storage",
+        "method": "eth_getStorageValues",
+        "params": [{
+            (history_storage_probe_address): [history_storage_probe_slot],
+        }, history_hash_reference],
+    });
     let head_request = json!({
         "jsonrpc": JSONRPC_VERSION,
         "id": "head",
@@ -1159,19 +1569,23 @@ pub async fn readiness(
         archive_history_balance,
         archive_history_receipt,
         archive_history_logs,
+        routed_history_balance,
+        routed_history_storage,
         live_head,
         archive_head,
     ) = tokio::join!(
-        router.live.call(&chain_request, true, &budget),
-        router.archive.call(&chain_request, true, &budget),
-        router.live.call(&anchor_request, true, &budget),
-        router.archive.call(&anchor_request, true, &budget),
-        router.archive.call(&history_request, true, &budget),
-        router.archive.call(&history_balance_request, true, &budget),
-        router.archive.call(&history_receipt_request, true, &budget),
-        router.archive.call(&history_logs_request, true, &budget),
-        router.live.call(&head_request, true, &budget),
-        router.archive.call(&head_request, true, &budget),
+        router.live.call(&chain_request, true, budget.as_ref()),
+        router.archive.call(&chain_request, true, budget.as_ref()),
+        router.live.call(&anchor_request, true, budget.as_ref()),
+        router.archive.call(&anchor_request, true, budget.as_ref()),
+        router.archive.call(&history_request, true, budget.as_ref()),
+        router.archive.call(&history_balance_request, true, budget.as_ref()),
+        router.archive.call(&history_receipt_request, true, budget.as_ref()),
+        router.archive.call(&history_logs_request, true, budget.as_ref()),
+        router.dispatch_with_budget(routed_history_balance_request, budget.clone()),
+        router.dispatch_with_budget(routed_history_storage_request, budget.clone()),
+        router.live.call(&head_request, true, budget.as_ref()),
+        router.archive.call(&head_request, true, budget.as_ref()),
     );
     let live_chain = response_quantity(live_chain?, "live", "chain id")?;
     let archive_chain = response_quantity(archive_chain?, "archive", "chain id")?;
@@ -1212,6 +1626,18 @@ pub async fn readiness(
         history_probe_number,
     )?;
     response_empty_array(archive_history_logs?, "archive", "history logs")?;
+    response_expected_quantity(
+        routed_history_balance,
+        "router",
+        "routed history balance",
+        history_probe_balance,
+    )?;
+    response_expected_storage_value(
+        routed_history_storage,
+        "router",
+        history_storage_probe_address,
+        history_storage_probe_value,
+    )?;
     let live_head = response_quantity(live_head?, "live", "head")?;
     let archive_head = response_quantity(archive_head?, "archive", "head")?;
     if live_head.abs_diff(archive_head) > max_head_lag {
@@ -1228,8 +1654,8 @@ pub async fn readiness(
         "params": [format!("0x{common:x}"), false],
     });
     let (live_common, archive_common) = tokio::join!(
-        router.live.call(&common_request, true, &budget),
-        router.archive.call(&common_request, true, &budget)
+        router.live.call(&common_request, true, budget.as_ref()),
+        router.archive.call(&common_request, true, budget.as_ref())
     );
     let live_common = response_block_hash(live_common?, "live", "common head")?;
     let archive_common = response_block_hash(archive_common?, "archive", "common head")?;
@@ -1249,6 +1675,9 @@ pub async fn readiness(
         "history_probe_address": history_probe_address,
         "history_probe_balance": history_probe_balance,
         "history_probe_transaction_hash": history_probe_transaction_hash,
+        "history_storage_probe_address": history_storage_probe_address,
+        "history_storage_probe_slot": history_storage_probe_slot,
+        "history_storage_probe_value": history_storage_probe_value,
         "live_head": live_head,
         "archive_head": archive_head,
         "common_head": common,
@@ -1367,6 +1796,44 @@ fn response_empty_array(
     Ok(())
 }
 
+fn response_expected_storage_value(
+    response: Option<Value>,
+    backend: &'static str,
+    address: &str,
+    expected: &str,
+) -> Result<(), RouterError> {
+    let response = response.ok_or_else(|| missing_response(backend))?;
+    let result =
+        response.get("result").and_then(Value::as_object).ok_or_else(|| RouterError::Backend {
+            backend,
+            message: "routed history storage response is not an object".to_owned(),
+        })?;
+    if result.len() != 1 {
+        return Err(RouterError::Backend {
+            backend,
+            message: "routed history storage response has unexpected addresses".to_owned(),
+        })
+    }
+    let values =
+        result.get(&address.to_ascii_lowercase()).and_then(Value::as_array).ok_or_else(|| {
+            RouterError::Backend {
+                backend,
+                message: "routed history storage response has no probe address".to_owned(),
+            }
+        })?;
+    let value = values.as_slice();
+    if value.len() != 1 ||
+        !value[0].as_str().is_some_and(|value| value.eq_ignore_ascii_case(expected))
+    {
+        return Err(RouterError::Backend {
+            backend,
+            message: "routed history storage response does not contain the expected value"
+                .to_owned(),
+        })
+    }
+    Ok(())
+}
+
 fn response_block_hash(
     response: Option<Value>,
     backend: &'static str,
@@ -1432,6 +1899,43 @@ mod tests {
         (format!("http://{address}/").parse().unwrap(), task)
     }
 
+    async fn spawn_optional_backend<F, Fut>(handler: F) -> (Url, JoinHandle<()>)
+    where
+        F: Fn(Value) -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = Option<Value>> + Send + 'static,
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let handler = handler.clone();
+                let service = service_fn(move |request: Request<hyper::body::Incoming>| {
+                    let handler = handler.clone();
+                    async move {
+                        let bytes = request.into_body().collect().await.unwrap().to_bytes();
+                        let request = serde_json::from_slice(&bytes).unwrap();
+                        let response = match handler(request).await {
+                            Some(response) => Response::builder()
+                                .header(CONTENT_TYPE, "application/json")
+                                .body(HttpBody::from(serde_json::to_vec(&response).unwrap()))
+                                .unwrap(),
+                            None => Response::builder()
+                                .status(http::StatusCode::NO_CONTENT)
+                                .body(HttpBody::empty())
+                                .unwrap(),
+                        };
+                        Ok::<_, Infallible>(response)
+                    }
+                });
+                tokio::spawn(async move {
+                    serve(stream, service).await.unwrap();
+                });
+            }
+        });
+        (format!("http://{address}/").parse().unwrap(), task)
+    }
+
     #[test]
     fn explicit_block_routes_across_history_boundary() {
         assert_eq!(
@@ -1481,6 +1985,35 @@ mod tests {
             route_plan("eth_sendRawTransaction", &params(vec![json!("0x01")]), LIVE_START),
             Ok(RoutePlan::Live)
         );
+    }
+
+    #[test]
+    fn state_hash_lookups_route_directly_to_archive() {
+        let address = format!("0x{}", "11".repeat(20));
+        let hash = format!("0x{}", "22".repeat(32));
+        let block = json!({"blockHash": hash, "requireCanonical": true});
+        for (method, method_params) in [
+            ("eth_getBalance", params(vec![json!(address.clone()), block.clone()])),
+            ("eth_getTransactionCount", params(vec![json!(address.clone()), block.clone()])),
+            ("eth_getCode", params(vec![json!(address.clone()), block.clone()])),
+            ("eth_call", params(vec![json!({}), block.clone()])),
+            ("eth_estimateGas", params(vec![json!({}), block.clone()])),
+            ("eth_getStorageAt", params(vec![json!(address), json!("0x0"), block.clone()])),
+        ] {
+            assert_eq!(
+                route_plan(method, &method_params, LIVE_START),
+                Ok(RoutePlan::Archive),
+                "{method}",
+            );
+        }
+
+        let storage_values = route_plan(
+            "eth_getStorageValues",
+            &params(vec![json!({(address): ["0x0"]}), block]),
+            LIVE_START,
+        )
+        .unwrap();
+        assert!(matches!(storage_values, RoutePlan::ArchiveStorageValues(_)));
     }
 
     #[test]
@@ -1549,7 +2082,6 @@ mod tests {
             "eth_estimateGas",
             "eth_getBalance",
             "eth_getCode",
-            "eth_getStorageValues",
             "eth_getTransactionCount",
         ] {
             assert_eq!(
@@ -1558,6 +2090,19 @@ mod tests {
                 "{method}",
             );
         }
+        assert!(matches!(
+            route_plan(
+                "eth_getStorageValues",
+                &params(vec![
+                    json!({
+                        "0x0000000000000000000000000000000000000000": ["0x0"],
+                    }),
+                    json!("0x3e7")
+                ]),
+                LIVE_START,
+            ),
+            Ok(RoutePlan::ArchiveStorageValues(_)),
+        ));
         assert_eq!(
             route_plan(
                 "eth_getStorageAt",
@@ -1571,7 +2116,13 @@ mod tests {
             Ok(RoutePlan::Live),
         );
         assert_eq!(
-            route_plan("eth_getStorageValues", &params(vec![json!({})]), LIVE_START),
+            route_plan(
+                "eth_getStorageValues",
+                &params(vec![json!({
+                    "0x0000000000000000000000000000000000000000": ["0x0"],
+                })]),
+                LIVE_START,
+            ),
             Ok(RoutePlan::Live),
         );
         assert_eq!(
@@ -1782,13 +2333,33 @@ mod tests {
     }
 
     #[test]
-    fn backend_envelope_requires_an_object_error() {
+    fn backend_envelope_requires_a_well_formed_error() {
         assert_eq!(
             validate_backend_response(
                 &json!({"jsonrpc": "2.0", "id": 1, "error": "not-an-object"}),
                 &json!(1),
             ),
             Err("backend response error is not an object")
+        );
+        assert_eq!(
+            validate_backend_response(
+                &json!({"jsonrpc": "2.0", "id": 1, "error": {
+                    "code": "-32000",
+                    "message": "wrong code type",
+                }}),
+                &json!(1),
+            ),
+            Err("backend response error code is not an integer")
+        );
+        assert_eq!(
+            validate_backend_response(
+                &json!({"jsonrpc": "2.0", "id": 1, "error": {
+                    "code": -32000,
+                    "message": 7,
+                }}),
+                &json!(1),
+            ),
+            Err("backend response error message is not a string")
         );
     }
 
@@ -2271,11 +2842,565 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn old_hash_state_request_uses_archive_without_touching_live() {
+        let live_calls = Arc::new(Mutex::new(0usize));
+        let archive_calls = Arc::new(Mutex::new(Vec::new()));
+        let (live_url, live_task) = spawn_backend({
+            let calls = live_calls.clone();
+            move |request: Value| {
+                let calls = calls.clone();
+                async move {
+                    *calls.lock().unwrap() += 1;
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": request["id"],
+                        "error": {"code": -32001, "message": "block not found"},
+                    })
+                }
+            }
+        })
+        .await;
+        let (archive_url, archive_task) = spawn_backend({
+            let calls = archive_calls.clone();
+            move |request: Value| {
+                let calls = calls.clone();
+                async move {
+                    calls.lock().unwrap().push(request.clone());
+                    json!({"jsonrpc": "2.0", "id": request["id"], "result": "0x2a"})
+                }
+            }
+        })
+        .await;
+        let router = RpcRouter::new(
+            RouterConfig {
+                live_history_start: LIVE_START,
+                max_response_bytes: 64 * 1024,
+                max_batch_len: 8,
+                max_inflight: 8,
+                backend_timeout: Duration::from_secs(2),
+            },
+            BackendConfig { name: "live", url: live_url },
+            BackendConfig { name: "archive", url: archive_url },
+        )
+        .unwrap();
+        let block_hash = format!("0x{}", "44".repeat(32));
+        let response = router
+            .dispatch(json!({
+                "jsonrpc": "2.0",
+                "id": 41,
+                "method": "eth_getBalance",
+                "params": [
+                    format!("0x{}", "33".repeat(20)),
+                    {"blockHash": block_hash, "requireCanonical": true},
+                ],
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(response["id"], 41);
+        assert_eq!(response["result"], "0x2a");
+        assert_eq!(*live_calls.lock().unwrap(), 0);
+        let archive_calls = archive_calls.lock().unwrap();
+        assert_eq!(archive_calls.len(), 1);
+        assert_eq!(archive_calls[0]["method"], "eth_getBalance");
+        assert_eq!(archive_calls[0]["params"][1]["blockHash"], block_hash);
+        live_task.abort();
+        archive_task.abort();
+    }
+
+    #[tokio::test]
+    async fn old_storage_values_are_synthesized_with_order_and_block_preserved() {
+        let live_calls = Arc::new(Mutex::new(0usize));
+        let archive_calls = Arc::new(Mutex::new(Vec::new()));
+        let (live_url, live_task) = spawn_backend({
+            let calls = live_calls.clone();
+            move |request: Value| {
+                let calls = calls.clone();
+                async move {
+                    *calls.lock().unwrap() += 1;
+                    json!({"jsonrpc": "2.0", "id": request["id"], "result": null})
+                }
+            }
+        })
+        .await;
+        let (archive_url, archive_task) = spawn_backend({
+            let calls = archive_calls.clone();
+            move |request: Value| {
+                let calls = calls.clone();
+                async move {
+                    calls.lock().unwrap().push(request.clone());
+                    let slot = request["params"][1].as_str().unwrap();
+                    let value = match slot {
+                        "0x1" => format!("0x{:064x}", 1),
+                        "0x2" => format!("0x{:064x}", 2),
+                        "0x3" => format!("0x{:064x}", 3),
+                        unexpected => panic!("unexpected storage slot: {unexpected}"),
+                    };
+                    json!({"jsonrpc": "2.0", "id": request["id"], "result": value})
+                }
+            }
+        })
+        .await;
+        let router = RpcRouter::new(
+            RouterConfig {
+                live_history_start: LIVE_START,
+                max_response_bytes: 64 * 1024,
+                max_batch_len: 8,
+                max_inflight: 2,
+                backend_timeout: Duration::from_secs(2),
+            },
+            BackendConfig { name: "live", url: live_url },
+            BackendConfig { name: "archive", url: archive_url },
+        )
+        .unwrap();
+        let address_a = format!("0x{}", "AA".repeat(20));
+        let address_b = format!("0x{}", "bb".repeat(20));
+        let response = router
+            .dispatch(json!({
+                "jsonrpc": "2.0",
+                "id": 42,
+                "method": "eth_getStorageValues",
+                "params": [{
+                    (address_a.clone()): ["0x2", "0x1"],
+                    (address_b.clone()): ["0x3"],
+                }, "0x3e7"],
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(response["id"], 42);
+        assert_eq!(
+            response["result"][address_a.to_ascii_lowercase()],
+            json!([format!("0x{:064x}", 2), format!("0x{:064x}", 1)])
+        );
+        assert_eq!(
+            response["result"][address_b.to_ascii_lowercase()],
+            json!([format!("0x{:064x}", 3)])
+        );
+        assert_eq!(*live_calls.lock().unwrap(), 0);
+        let archive_calls = archive_calls.lock().unwrap();
+        assert_eq!(archive_calls.len(), 3);
+        assert!(archive_calls.iter().all(|request| request["method"] == "eth_getStorageAt"));
+        assert!(archive_calls.iter().all(|request| request["params"][2] == "0x3e7"));
+        assert!(archive_calls.iter().all(|request| {
+            request["params"][0]
+                .as_str()
+                .is_some_and(|address| address == address.to_ascii_lowercase())
+        }));
+        live_task.abort();
+        archive_task.abort();
+    }
+
+    #[tokio::test]
+    async fn empty_storage_maps_probe_the_requested_archive_block() {
+        let live_calls = Arc::new(Mutex::new(0usize));
+        let archive_calls = Arc::new(Mutex::new(Vec::new()));
+        let known_hash = format!("0x{}", "77".repeat(32));
+        let unknown_hash = format!("0x{}", "88".repeat(32));
+        let (live_url, live_task) = spawn_backend({
+            let calls = live_calls.clone();
+            move |request: Value| {
+                let calls = calls.clone();
+                async move {
+                    *calls.lock().unwrap() += 1;
+                    json!({"jsonrpc": "2.0", "id": request["id"], "result": null})
+                }
+            }
+        })
+        .await;
+        let (archive_url, archive_task) = spawn_backend({
+            let calls = archive_calls.clone();
+            let known_hash = known_hash.clone();
+            move |request: Value| {
+                let calls = calls.clone();
+                let known_hash = known_hash.clone();
+                async move {
+                    calls.lock().unwrap().push(request.clone());
+                    if request.pointer("/params/1/blockHash").and_then(Value::as_str) ==
+                        Some(known_hash.as_str())
+                    {
+                        json!({"jsonrpc": "2.0", "id": request["id"], "result": "0x0"})
+                    } else {
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": request["id"],
+                            "error": {"code": -32001, "message": "unknown block"},
+                        })
+                    }
+                }
+            }
+        })
+        .await;
+        let router = RpcRouter::new(
+            RouterConfig {
+                live_history_start: LIVE_START,
+                max_response_bytes: 64 * 1024,
+                max_batch_len: 8,
+                max_inflight: 2,
+                backend_timeout: Duration::from_secs(2),
+            },
+            BackendConfig { name: "live", url: live_url },
+            BackendConfig { name: "archive", url: archive_url },
+        )
+        .unwrap();
+        let address_a = format!("0x{}", "aa".repeat(20));
+        let address_b = format!("0x{}", "bb".repeat(20));
+        let response = router
+            .dispatch(json!({
+                "jsonrpc": "2.0",
+                "id": 45,
+                "method": "eth_getStorageValues",
+                "params": [{
+                    (address_a.clone()): [],
+                    (address_b.clone()): [],
+                }, {"blockHash": known_hash, "requireCanonical": true}],
+            }))
+            .await
+            .unwrap();
+        assert_eq!(response["result"][address_a], json!([]));
+        assert_eq!(response["result"][address_b], json!([]));
+
+        let unknown = router
+            .dispatch(json!({
+                "jsonrpc": "2.0",
+                "id": "unknown-empty-block",
+                "method": "eth_getStorageValues",
+                "params": [{
+                    (format!("0x{}", "cc".repeat(20))): [],
+                }, {"blockHash": unknown_hash, "requireCanonical": true}],
+            }))
+            .await
+            .unwrap();
+        assert_eq!(unknown["id"], "unknown-empty-block");
+        assert_eq!(unknown["error"]["code"], -32001);
+        assert_eq!(unknown["error"]["message"], "unknown block");
+        assert_eq!(*live_calls.lock().unwrap(), 0);
+        let archive_calls = archive_calls.lock().unwrap();
+        assert_eq!(archive_calls.len(), 2);
+        assert!(archive_calls.iter().all(|request| request["method"] == "eth_getBalance"));
+        assert!(archive_calls
+            .iter()
+            .all(|request| request["id"] == "telos-router-storage-empty-probe"));
+        live_task.abort();
+        archive_task.abort();
+    }
+
+    #[tokio::test]
+    async fn storage_fanout_is_capped_across_a_sixty_four_element_batch() {
+        let live_calls = Arc::new(Mutex::new(0usize));
+        let archive_calls = Arc::new(Mutex::new(0usize));
+        let (live_url, live_task) = spawn_backend({
+            let calls = live_calls.clone();
+            move |request: Value| {
+                let calls = calls.clone();
+                async move {
+                    *calls.lock().unwrap() += 1;
+                    json!({"jsonrpc": "2.0", "id": request["id"], "result": null})
+                }
+            }
+        })
+        .await;
+        let (archive_url, archive_task) = spawn_backend({
+            let calls = archive_calls.clone();
+            move |request: Value| {
+                let calls = calls.clone();
+                async move {
+                    *calls.lock().unwrap() += 1;
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": request["id"],
+                        "result": format!("0x{}", "00".repeat(32)),
+                    })
+                }
+            }
+        })
+        .await;
+        let router = RpcRouter::new(
+            RouterConfig {
+                live_history_start: LIVE_START,
+                max_response_bytes: 1024 * 1024,
+                max_batch_len: 64,
+                max_inflight: 64,
+                backend_timeout: Duration::from_secs(30),
+            },
+            BackendConfig { name: "live", url: live_url },
+            BackendConfig { name: "archive", url: archive_url },
+        )
+        .unwrap();
+        let requests = (0..64)
+            .map(|index| {
+                let address = format!("0x{index:040x}");
+                let slots = (0..17).map(|slot| format!("0x{slot:x}")).collect::<Vec<_>>();
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": index,
+                    "method": "eth_getStorageValues",
+                    "params": [{(address): slots}, "0x3e7"],
+                })
+            })
+            .collect::<Vec<_>>();
+        let response = router.dispatch(Value::Array(requests)).await.unwrap();
+        let responses = response.as_array().unwrap();
+        let successes =
+            responses.iter().filter(|response| response.get("result").is_some()).count();
+        let rejected = responses
+            .iter()
+            .filter(|response| {
+                response
+                    .pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .is_some_and(|message| message.contains("fan-out exceeds 1024"))
+            })
+            .count();
+
+        assert_eq!(responses.len(), 64);
+        assert_eq!(successes, 60);
+        assert_eq!(rejected, 4);
+        assert_eq!(*archive_calls.lock().unwrap(), successes * 17);
+        assert!(*archive_calls.lock().unwrap() <= MAX_ARCHIVE_STORAGE_CALLS_PER_DISPATCH);
+        assert_eq!(*live_calls.lock().unwrap(), 0);
+        live_task.abort();
+        archive_task.abort();
+    }
+
+    #[test]
+    fn storage_values_validation_rejects_limits_and_ambiguous_addresses() {
+        let address = format!("0x{}", "aa".repeat(20));
+        let upper_address = address.to_ascii_uppercase().replacen("0X", "0x", 1);
+        let block = json!("0x3e7");
+        let duplicate = params(vec![
+            json!({
+                (address.clone()): ["0x0"],
+                (upper_address): ["0x1"],
+            }),
+            block.clone(),
+        ]);
+        assert!(route_plan("eth_getStorageValues", &duplicate, LIVE_START).is_err());
+
+        let malformed = params(vec![json!({"not-an-address": ["0x0"]}), block.clone()]);
+        assert!(route_plan("eth_getStorageValues", &malformed, LIVE_START).is_err());
+        let invalid_slot = params(vec![json!({(address.clone()): [7]}), block.clone()]);
+        assert!(route_plan("eth_getStorageValues", &invalid_slot, LIVE_START).is_err());
+        let too_long_key = format!("0x{}", "1".repeat(65));
+        for invalid_key in ["", "0x", "1", "0xgg", too_long_key.as_str()] {
+            let invalid_slot =
+                params(vec![json!({(address.clone()): [invalid_key]}), block.clone()]);
+            assert!(route_plan("eth_getStorageValues", &invalid_slot, LIVE_START).is_err());
+        }
+        let invalid_live_slot = params(vec![json!({(address.clone()): ["0x"]}), json!("latest")]);
+        assert!(route_plan("eth_getStorageValues", &invalid_live_slot, LIVE_START).is_err());
+        let maximum_key = format!("0x{}", "f".repeat(64));
+        let valid_slot = params(vec![json!({(address.clone()): [maximum_key]}), block.clone()]);
+        assert!(matches!(
+            route_plan("eth_getStorageValues", &valid_slot, LIVE_START),
+            Ok(RoutePlan::ArchiveStorageValues(_)),
+        ));
+        let empty = params(vec![json!({}), block.clone()]);
+        assert!(route_plan("eth_getStorageValues", &empty, LIVE_START).is_err());
+        let excessive_addresses = (0..=MAX_STORAGE_VALUES_SLOTS)
+            .map(|index| (format!("0x{index:040x}"), Value::Array(Vec::new())))
+            .collect::<Map<_, _>>();
+        let excessive_addresses = params(vec![Value::Object(excessive_addresses), block.clone()]);
+        assert!(route_plan("eth_getStorageValues", &excessive_addresses, LIVE_START).is_err());
+
+        let maximum = vec![json!("0x0"); MAX_STORAGE_VALUES_SLOTS];
+        let accepted = params(vec![json!({(address.clone()): maximum}), block.clone()]);
+        assert!(matches!(
+            route_plan("eth_getStorageValues", &accepted, LIVE_START),
+            Ok(RoutePlan::ArchiveStorageValues(_)),
+        ));
+        let excessive = vec![json!("0x0"); MAX_STORAGE_VALUES_SLOTS + 1];
+        let rejected = params(vec![json!({(address): excessive}), block]);
+        assert!(route_plan("eth_getStorageValues", &rejected, LIVE_START).is_err());
+    }
+
+    #[tokio::test]
+    async fn storage_values_rewrites_backend_error_id_and_rejects_invalid_values() {
+        let live_calls = Arc::new(Mutex::new(0usize));
+        let (live_url, live_task) = spawn_backend({
+            let calls = live_calls.clone();
+            move |request: Value| {
+                let calls = calls.clone();
+                async move {
+                    *calls.lock().unwrap() += 1;
+                    json!({"jsonrpc": "2.0", "id": request["id"], "result": null})
+                }
+            }
+        })
+        .await;
+        let (archive_url, archive_task) = spawn_backend(|request: Value| async move {
+            match request["params"][1].as_str().unwrap() {
+                "0x1" => json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "error": {
+                        "code": -32042,
+                        "message": "historical state unavailable",
+                        "data": {"source": "incumbent"},
+                    },
+                }),
+                "0x2" => {
+                    json!({"jsonrpc": "2.0", "id": request["id"], "result": "0x1"})
+                }
+                "0x3" => json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "error": {
+                        "code": "-32042",
+                        "message": "code has the wrong type",
+                    },
+                }),
+                unexpected => panic!("unexpected slot: {unexpected}"),
+            }
+        })
+        .await;
+        let router = RpcRouter::new(
+            RouterConfig {
+                live_history_start: LIVE_START,
+                max_response_bytes: 64 * 1024,
+                max_batch_len: 8,
+                max_inflight: 2,
+                backend_timeout: Duration::from_secs(2),
+            },
+            BackendConfig { name: "live", url: live_url },
+            BackendConfig { name: "archive", url: archive_url },
+        )
+        .unwrap();
+        let address = format!("0x{}", "55".repeat(20));
+        let error = router
+            .dispatch(json!({
+                "jsonrpc": "2.0",
+                "id": "original-error-id",
+                "method": "eth_getStorageValues",
+                "params": [{(address.clone()): ["0x1"]}, "0x3e7"],
+            }))
+            .await
+            .unwrap();
+        assert_eq!(error["id"], "original-error-id");
+        assert_eq!(error["error"]["code"], -32042);
+        assert_eq!(error["error"]["data"]["source"], "incumbent");
+
+        let invalid = router
+            .dispatch(json!({
+                "jsonrpc": "2.0",
+                "id": 43,
+                "method": "eth_getStorageValues",
+                "params": [{(address.clone()): ["0x2"]}, "0x3e7"],
+            }))
+            .await
+            .unwrap();
+        assert_eq!(invalid["id"], 43);
+        assert_eq!(invalid["error"]["code"], ROUTER_ERROR);
+        assert!(invalid["error"]["message"].as_str().unwrap().contains("exactly 32 bytes"));
+
+        let malformed_error = router
+            .dispatch(json!({
+                "jsonrpc": "2.0",
+                "id": 44,
+                "method": "eth_getStorageValues",
+                "params": [{(address): ["0x3"]}, "0x3e7"],
+            }))
+            .await
+            .unwrap();
+        assert_eq!(malformed_error["id"], 44);
+        assert_eq!(malformed_error["error"]["code"], ROUTER_ERROR);
+        assert!(malformed_error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("error code is not an integer"));
+        assert_eq!(*live_calls.lock().unwrap(), 0);
+        live_task.abort();
+        archive_task.abort();
+    }
+
+    #[tokio::test]
+    async fn storage_values_notification_fans_out_without_a_response() {
+        let live_calls = Arc::new(Mutex::new(0usize));
+        let archive_calls = Arc::new(Mutex::new(Vec::new()));
+        let (live_url, live_task) = spawn_optional_backend({
+            let calls = live_calls.clone();
+            move |_request: Value| {
+                let calls = calls.clone();
+                async move {
+                    *calls.lock().unwrap() += 1;
+                    None
+                }
+            }
+        })
+        .await;
+        let (archive_url, archive_task) = spawn_optional_backend({
+            let calls = archive_calls.clone();
+            move |request: Value| {
+                let calls = calls.clone();
+                async move {
+                    calls.lock().unwrap().push(request);
+                    None
+                }
+            }
+        })
+        .await;
+        let router = RpcRouter::new(
+            RouterConfig {
+                live_history_start: LIVE_START,
+                max_response_bytes: 64 * 1024,
+                max_batch_len: 8,
+                max_inflight: 2,
+                backend_timeout: Duration::from_secs(2),
+            },
+            BackendConfig { name: "live", url: live_url },
+            BackendConfig { name: "archive", url: archive_url },
+        )
+        .unwrap();
+        let address = format!("0x{}", "66".repeat(20));
+        let response = router
+            .dispatch(json!({
+                "jsonrpc": "2.0",
+                "method": "eth_getStorageValues",
+                "params": [{(address.clone()): ["0x1", "0x2"]}, "0x3e7"],
+            }))
+            .await;
+        let empty_response = router
+            .dispatch(json!({
+                "jsonrpc": "2.0",
+                "method": "eth_getStorageValues",
+                "params": [{(address): []}, "0x3e7"],
+            }))
+            .await;
+
+        assert!(response.is_none());
+        assert!(empty_response.is_none());
+        assert_eq!(*live_calls.lock().unwrap(), 0);
+        let archive_calls = archive_calls.lock().unwrap();
+        assert_eq!(archive_calls.len(), 3);
+        assert!(archive_calls.iter().all(|request| request.get("id").is_none()));
+        assert_eq!(
+            archive_calls.iter().filter(|request| request["method"] == "eth_getStorageAt").count(),
+            2
+        );
+        assert_eq!(
+            archive_calls.iter().filter(|request| request["method"] == "eth_getBalance").count(),
+            1
+        );
+        assert!(archive_calls
+            .iter()
+            .filter(|request| request["method"] == "eth_getStorageAt")
+            .all(|request| request["params"][2] == "0x3e7"));
+        assert!(archive_calls
+            .iter()
+            .filter(|request| request["method"] == "eth_getBalance")
+            .all(|request| request["params"][1] == "0x3e7"));
+        live_task.abort();
+        archive_task.abort();
+    }
+
+    #[tokio::test]
     async fn readiness_proves_pre_savanna_balance_receipt_and_empty_logs() {
         let anchor_hash = format!("0x{}", "aa".repeat(32));
         let history_hash = format!("0x{}", "bb".repeat(32));
         let transaction_hash = format!("0x{}", "cc".repeat(32));
         let address = format!("0x{}", "dd".repeat(20));
+        let storage_address = format!("0x{}", "12".repeat(20));
+        let storage_value = format!("0x{}", "00".repeat(31) + "12");
         let common_hash = format!("0x{}", "ee".repeat(32));
         let balance = "0x123456789abcdef";
 
@@ -2310,11 +3435,15 @@ mod tests {
             let anchor_hash = anchor_hash.clone();
             let history_hash = history_hash.clone();
             let transaction_hash = transaction_hash.clone();
+            let storage_address = storage_address.clone();
+            let storage_value = storage_value.clone();
             let common_hash = common_hash.clone();
             move |request: Value| {
                 let anchor_hash = anchor_hash.clone();
                 let history_hash = history_hash.clone();
                 let transaction_hash = transaction_hash.clone();
+                let storage_address = storage_address.clone();
+                let storage_value = storage_value.clone();
                 let common_hash = common_hash.clone();
                 async move {
                     let id = request["id"].clone();
@@ -2333,6 +3462,16 @@ mod tests {
                         "history-balance" => {
                             json!({"jsonrpc": "2.0", "id": id, "result": balance})
                         }
+                        "routed-history-balance" => {
+                            assert_eq!(
+                                request["params"][1],
+                                json!({
+                                    "blockHash": history_hash,
+                                    "requireCanonical": true,
+                                })
+                            );
+                            json!({"jsonrpc": "2.0", "id": id, "result": balance})
+                        }
                         "history-receipt" => json!({
                             "jsonrpc": "2.0",
                             "id": id,
@@ -2344,6 +3483,23 @@ mod tests {
                         }),
                         "history-logs" => {
                             json!({"jsonrpc": "2.0", "id": id, "result": []})
+                        }
+                        "telos-router-storage-0" => {
+                            assert_eq!(request["method"], "eth_getStorageAt");
+                            assert_eq!(request["params"][0], storage_address);
+                            assert_eq!(request["params"][1], "0x2");
+                            assert_eq!(
+                                request["params"][2],
+                                json!({
+                                    "blockHash": history_hash,
+                                    "requireCanonical": true,
+                                })
+                            );
+                            json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "result": storage_value,
+                            })
                         }
                         "head" => json!({"jsonrpc": "2.0", "id": id, "result": "0x3eb"}),
                         "common" => json!({
@@ -2381,6 +3537,9 @@ mod tests {
                 history_probe_address: &address,
                 history_probe_balance: balance,
                 history_probe_transaction_hash: &transaction_hash,
+                history_storage_probe_address: &storage_address,
+                history_storage_probe_slot: "0x2",
+                history_storage_probe_value: &storage_value,
                 max_head_lag: 4,
             },
         )
@@ -2389,6 +3548,9 @@ mod tests {
         assert_eq!(ready["ready"], true);
         assert_eq!(ready["history_probe_balance"], balance);
         assert_eq!(ready["history_probe_transaction_hash"], transaction_hash);
+        assert_eq!(ready["history_storage_probe_address"], storage_address);
+        assert_eq!(ready["history_storage_probe_slot"], "0x2");
+        assert_eq!(ready["history_storage_probe_value"], storage_value);
         assert_eq!(ready["common_hash"], common_hash);
         live_task.abort();
         archive_task.abort();

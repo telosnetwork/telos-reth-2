@@ -150,6 +150,9 @@ required_config=(
     TELOS_RPC_ROUTER_HISTORY_PROBE_ADDRESS
     TELOS_RPC_ROUTER_HISTORY_PROBE_BALANCE
     TELOS_RPC_ROUTER_HISTORY_PROBE_TRANSACTION_HASH
+    TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_ADDRESS
+    TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_SLOT
+    TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_VALUE
     TELOS_RPC_ROUTER_MAX_HEAD_LAG
 )
 unset "${required_config[@]}"
@@ -177,6 +180,12 @@ done
     die "TELOS_RPC_ROUTER_HISTORY_PROBE_BALANCE is malformed"
 [[ $TELOS_RPC_ROUTER_HISTORY_PROBE_TRANSACTION_HASH =~ ^0x[0-9a-f]{64}$ ]] ||
     die "TELOS_RPC_ROUTER_HISTORY_PROBE_TRANSACTION_HASH is malformed"
+[[ $TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_ADDRESS =~ ^0x[0-9a-f]{40}$ ]] ||
+    die "TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_ADDRESS is malformed"
+[[ $TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_SLOT =~ ^0x[0-9a-f]{1,64}$ ]] ||
+    die "TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_SLOT is malformed"
+[[ $TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_VALUE =~ ^0x[0-9a-f]{64}$ ]] ||
+    die "TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_VALUE is malformed"
 
 router_url=$(python3 - "$TELOS_RPC_ROUTER_LISTEN" <<'PY'
 import ipaddress
@@ -251,6 +260,9 @@ python3 - \
     "$TELOS_RPC_ROUTER_HISTORY_PROBE_ADDRESS" \
     "$TELOS_RPC_ROUTER_HISTORY_PROBE_BALANCE" \
     "$TELOS_RPC_ROUTER_HISTORY_PROBE_TRANSACTION_HASH" \
+    "$TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_ADDRESS" \
+    "$TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_SLOT" \
+    "$TELOS_RPC_ROUTER_HISTORY_STORAGE_PROBE_VALUE" \
     "$TELOS_RPC_ROUTER_MAX_HEAD_LAG" > "$parsed_file" <<'PY' ||
 import json
 import re
@@ -266,6 +278,9 @@ import sys
     expected_history_address,
     expected_history_balance,
     expected_history_transaction_hash,
+    expected_history_storage_address,
+    expected_history_storage_slot,
+    expected_history_storage_value,
     configured_max_lag,
 ) = sys.argv[1:]
 
@@ -304,6 +319,20 @@ def require_quantity(name: str) -> str:
     return item.lower()
 
 
+def require_data32(name: str) -> str:
+    item = value.get(name)
+    if not isinstance(item, str) or re.fullmatch(r"0x[0-9a-fA-F]{64}", item) is None:
+        raise SystemExit(f"router response field {name} is not 32 bytes")
+    return item.lower()
+
+
+def require_storage_key(name: str) -> str:
+    item = value.get(name)
+    if not isinstance(item, str) or re.fullmatch(r"0x[0-9a-fA-F]{1,64}", item) is None:
+        raise SystemExit(f"router response field {name} is not a storage key")
+    return item.lower()
+
+
 chain_id = require_integer("chain_id")
 live_start = require_integer("live_history_start")
 history_number = require_integer("history_probe_number")
@@ -312,6 +341,9 @@ history_hash = require_hash("history_probe_hash")
 history_address = require_address("history_probe_address")
 history_balance = require_quantity("history_probe_balance")
 history_transaction_hash = require_hash("history_probe_transaction_hash")
+history_storage_address = require_address("history_storage_probe_address")
+history_storage_slot = require_storage_key("history_storage_probe_slot")
+history_storage_value = require_data32("history_storage_probe_value")
 live_head = require_integer("live_head")
 archive_head = require_integer("archive_head")
 common_head = require_integer("common_head")
@@ -333,6 +365,12 @@ if history_balance != expected_history_balance.lower():
     raise SystemExit("router history probe balance differs from router.env")
 if history_transaction_hash != expected_history_transaction_hash.lower():
     raise SystemExit("router history probe transaction hash differs from router.env")
+if history_storage_address != expected_history_storage_address.lower():
+    raise SystemExit("router history storage probe address differs from router.env")
+if history_storage_slot != expected_history_storage_slot.lower():
+    raise SystemExit("router history storage probe slot differs from router.env")
+if history_storage_value != expected_history_storage_value.lower():
+    raise SystemExit("router history storage probe value differs from router.env")
 if common_head != min(live_head, archive_head):
     raise SystemExit("router common head is inconsistent with backend heads")
 
