@@ -274,11 +274,9 @@ fn u64_at(value: &Value, pointer: &str) -> u64 {
 }
 
 fn quantity_u64_at(value: &Value, pointer: &str) -> u64 {
-    u64::from_str_radix(
-        string_at(value, pointer).strip_prefix("0x").unwrap_or(string_at(value, pointer)),
-        16,
-    )
-    .unwrap_or_else(|error| panic!("invalid u64 quantity at {pointer}: {error}"))
+    let quantity = string_at(value, pointer);
+    u64::from_str_radix(quantity.strip_prefix("0x").unwrap_or(quantity), 16)
+        .unwrap_or_else(|error| panic!("invalid u64 quantity at {pointer}: {error}"))
 }
 
 fn u256_at(value: &Value, pointer: &str) -> U256 {
