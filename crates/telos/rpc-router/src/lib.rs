@@ -162,7 +162,7 @@ impl ResponseBudget {
 
     fn consume(&self, length: usize) -> bool {
         self.remaining
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
                 remaining.checked_sub(length)
             })
             .is_ok()
