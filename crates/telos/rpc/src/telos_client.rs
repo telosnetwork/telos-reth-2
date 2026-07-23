@@ -32,11 +32,15 @@ use crate::antelope::{
 /// at most once every few minutes; 8s gives sub-block freshness without hammering nodeos.
 const DEFAULT_GAS_CACHE_SECONDS: u32 = 8;
 
-/// `eth_maxPriorityFeePerGas` constant returned by the canonical Telos RPC.
-/// 1 gwei = 0x3b9aca00. Telos has no priority-fee market — transactions pay only
-/// `gas_price` from the eosio.evm config — but the canonical RPC returns 1 gwei
-/// to satisfy EIP-1559 wallets. We mirror that for parity.
-const TELOS_MAX_PRIORITY_FEE_PER_GAS_WEI: u64 = 1_000_000_000;
+/// `eth_maxPriorityFeePerGas` returned by the canonical Telos mainnet RPC.
+///
+/// Telos has no priority-fee market, but wallets still query this method. Mainnet and testnet
+/// intentionally expose different compatibility values, so this must stay bound to the configured
+/// chain rather than becoming a network-agnostic default.
+const TELOS_MAINNET_MAX_PRIORITY_FEE_PER_GAS_WEI: u64 = 500_000_000_000;
+
+/// `eth_maxPriorityFeePerGas` returned by the canonical Telos testnet RPC.
+const TELOS_TESTNET_MAX_PRIORITY_FEE_PER_GAS_WEI: u64 = 1_000_000_000;
 
 /// Maximum response body accepted from a native Telos endpoint.
 const MAX_NODEOS_RESPONSE_BYTES: usize = 1024 * 1024;
@@ -155,6 +159,7 @@ struct TelosClientInner {
     http_client: reqwest::Client,
     expected_evm_chain_id: u64,
     expected_native_chain_id: B256,
+    max_priority_fee_per_gas: U256,
     gas_cache_seconds: u32,
     gas_price_cache: Mutex<Option<(Instant, U256)>>,
 }
@@ -200,6 +205,20 @@ struct GetTableRowsResponse {
 #[derive(Debug, Deserialize)]
 struct EvmConfigRow {
     gas_price: String,
+}
+
+fn network_parameters(expected_evm_chain_id: u64) -> Result<(B256, U256), TelosClientError> {
+    match expected_evm_chain_id {
+        40 => Ok((
+            TELOS_MAINNET_NATIVE_CHAIN_ID,
+            U256::from(TELOS_MAINNET_MAX_PRIORITY_FEE_PER_GAS_WEI),
+        )),
+        41 => Ok((
+            TELOS_TESTNET_NATIVE_CHAIN_ID,
+            U256::from(TELOS_TESTNET_MAX_PRIORITY_FEE_PER_GAS_WEI),
+        )),
+        _ => Err(TelosClientError::UnsupportedEvmChainId(expected_evm_chain_id)),
+    }
 }
 
 fn validate_endpoint(endpoint: &str) -> Result<String, TelosClientError> {
@@ -318,11 +337,8 @@ impl TelosClient {
         args: TelosClientArgs,
         expected_evm_chain_id: u64,
     ) -> Result<Self, TelosClientError> {
-        let expected_native_chain_id = match expected_evm_chain_id {
-            40 => TELOS_MAINNET_NATIVE_CHAIN_ID,
-            41 => TELOS_TESTNET_NATIVE_CHAIN_ID,
-            _ => return Err(TelosClientError::UnsupportedEvmChainId(expected_evm_chain_id)),
-        };
+        let (expected_native_chain_id, max_priority_fee_per_gas) =
+            network_parameters(expected_evm_chain_id)?;
         let endpoint = args.telos_endpoint.ok_or(TelosClientError::Missing("telos_endpoint"))?;
         let endpoint = validate_endpoint(&endpoint)?;
         let signer_account_str =
@@ -360,6 +376,7 @@ impl TelosClient {
                 http_client,
                 expected_evm_chain_id,
                 expected_native_chain_id,
+                max_priority_fee_per_gas,
                 gas_cache_seconds,
                 gas_price_cache: Mutex::new(None),
             }),
@@ -528,9 +545,10 @@ impl TelosClient {
     ///   samples recent block transactions and returns 0 on Telos because empty 0.5s blocks
     ///   dominate the sample window. Wallets and SDKs depend on a non-zero value to construct
     ///   legacy txs.
-    /// - `eth_maxPriorityFeePerGas` — returns 1 gwei to mirror canonical RPC. Telos has no
-    ///   priority-fee market; transactions pay only `gas_price` from the config table. EIP-1559
-    ///   wallets nonetheless query this method and a 0 reply makes them refuse to broadcast.
+    /// - `eth_maxPriorityFeePerGas` — returns the configured network's canonical compatibility
+    ///   value. Telos has no priority-fee market; transactions pay only `gas_price` from the config
+    ///   table. EIP-1559 wallets nonetheless query this method and a 0 reply makes them refuse to
+    ///   broadcast.
     pub fn build_forwarder_module(&self) -> Result<RpcModule<()>, ErrorObjectOwned> {
         let mut module = RpcModule::new(());
 
@@ -582,10 +600,14 @@ impl TelosClient {
             .map_err(|e| ErrorObject::owned(-32603, format!("register method: {e}"), None::<()>))?;
 
         // eth_maxPriorityFeePerGas — Telos has no priority-fee market; mirror canonical RPC.
+        let max_priority_fee_per_gas = self.inner.max_priority_fee_per_gas;
         module
-            .register_async_method("eth_maxPriorityFeePerGas", |_params, _ctx, _ext| async move {
-                Ok::<U256, ErrorObject<'static>>(U256::from(TELOS_MAX_PRIORITY_FEE_PER_GAS_WEI))
-            })
+            .register_async_method(
+                "eth_maxPriorityFeePerGas",
+                move |_params, _ctx, _ext| async move {
+                    Ok::<U256, ErrorObject<'static>>(max_priority_fee_per_gas)
+                },
+            )
             .map_err(|e| ErrorObject::owned(-32603, format!("register method: {e}"), None::<()>))?;
 
         Ok(module)
@@ -870,8 +892,31 @@ mod tests {
     use alloy_consensus::{SignableTransaction, TxEip2930, TxLegacy};
     use alloy_eips::Encodable2718;
     use alloy_primitives::{b256, bytes, hex, Signature, TxKind};
+    use jsonrpsee::core::EmptyServerParams;
     #[cfg(unix)]
     use std::os::unix::fs::{symlink, PermissionsExt};
+
+    fn client_for_network(expected_evm_chain_id: u64) -> TelosClient {
+        let (expected_native_chain_id, max_priority_fee_per_gas) =
+            network_parameters(expected_evm_chain_id).unwrap();
+        TelosClient {
+            inner: Arc::new(TelosClientInner {
+                endpoint: "https://example.invalid".to_string(),
+                signer_actor: 0,
+                signer_permission: 0,
+                ram_payer: 0,
+                contract_account: 0,
+                action_name: 0,
+                secret_key: SecretKey::from_slice(&[7u8; 32]).unwrap(),
+                http_client: reqwest::Client::new(),
+                expected_evm_chain_id,
+                expected_native_chain_id,
+                max_priority_fee_per_gas,
+                gas_cache_seconds: DEFAULT_GAS_CACHE_SECONDS,
+                gas_price_cache: Mutex::new(None),
+            }),
+        }
+    }
 
     fn canonical_transaction(chain_id: Option<u64>) -> Vec<u8> {
         let tx = TxLegacy {
@@ -897,6 +942,29 @@ mod tests {
         // Live value observed on rpc.telos.net 2026-05-04 (`eth_gasPrice` = 0x4c68cd444de).
         let parsed = parse_evm_gas_price("4c68cd444de").expect("parses");
         assert_eq!(parsed, U256::from(5_250_812_757_214u64));
+    }
+
+    #[test]
+    fn priority_fee_compatibility_value_is_network_specific() {
+        assert_eq!(
+            network_parameters(40).unwrap(),
+            (TELOS_MAINNET_NATIVE_CHAIN_ID, U256::from(500_000_000_000u64))
+        );
+        assert_eq!(
+            network_parameters(41).unwrap(),
+            (TELOS_TESTNET_NATIVE_CHAIN_ID, U256::from(1_000_000_000u64))
+        );
+        assert!(matches!(network_parameters(1), Err(TelosClientError::UnsupportedEvmChainId(1))));
+    }
+
+    #[tokio::test]
+    async fn forwarder_module_returns_the_configured_network_priority_fee() {
+        for (chain_id, expected) in [(40, 500_000_000_000u64), (41, 1_000_000_000u64)] {
+            let module = client_for_network(chain_id).build_forwarder_module().unwrap();
+            let observed: U256 =
+                module.call("eth_maxPriorityFeePerGas", EmptyServerParams::new()).await.unwrap();
+            assert_eq!(observed, U256::from(expected));
+        }
     }
 
     #[test]
