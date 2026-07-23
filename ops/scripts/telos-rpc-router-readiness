@@ -1,0 +1,356 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+[[ $# -eq 1 ]] || {
+    echo "usage: $0 INSTANCE" >&2
+    exit 2
+}
+
+instance=$1
+config_root=/etc/telos-reth
+config=${config_root}/${instance}/router.env
+state_root=/var/lib/telos-reth-health
+state_dir=${state_root}/router-${instance}
+metrics_dir=${state_root}/metrics
+metrics_file=${metrics_dir}/telos_rpc_router_${instance}.prom
+lock_file=${state_dir}/check.lock
+last_success_file=${state_dir}/last-success
+response_file=
+parsed_file=
+
+[[ $instance =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || {
+    echo "invalid instance name" >&2
+    exit 2
+}
+
+mkdir -p "$state_dir" "$metrics_dir"
+[[ -d $state_root && ! -L $state_root && $(realpath -e "$state_root") == "$state_root" &&
+   $(stat -c '%U:%G %a' "$state_root") == 'root:root 755' ]] || {
+    echo "unsafe router readiness state root" >&2
+    exit 1
+}
+[[ -d $state_dir && ! -L $state_dir && $(realpath -e "$state_dir") == "$state_dir" &&
+   $(stat -c '%U:%G %a' "$state_dir") == 'telos-monitor:telos-monitor 700' ]] || {
+    echo "unsafe router readiness state directory" >&2
+    exit 1
+}
+[[ -d $metrics_dir && ! -L $metrics_dir && $(realpath -e "$metrics_dir") == "$metrics_dir" &&
+   $(stat -c '%U:%G %a' "$metrics_dir") == 'telos-monitor:telos-monitor 755' ]] || {
+    echo "unsafe router readiness metrics directory" >&2
+    exit 1
+}
+
+exec 9>"$lock_file"
+flock -w 10 9 || {
+    echo "telos-rpc-router readiness [$instance]: another check did not finish within 10s" >&2
+    exit 1
+}
+
+success=0
+identity_match=0
+live_head=0
+archive_head=0
+common_head=0
+head_lag=0
+stage=startup
+now=$(date +%s)
+
+persist_last_success() {
+    local tmp
+    tmp=$(mktemp "${state_dir}/.last-success.XXXXXX")
+    printf '%s\n' "$now" > "$tmp"
+    chmod 0600 "$tmp"
+    mv -f "$tmp" "$last_success_file"
+}
+
+emit_metrics() {
+    local status=$1 last_success=0 tmp
+    if [[ -r $last_success_file ]]; then
+        read -r last_success < "$last_success_file" || last_success=0
+        [[ $last_success =~ ^[0-9]+$ ]] || last_success=0
+    fi
+    tmp=$(mktemp "${metrics_dir}/.telos_rpc_router_${instance}.XXXXXX")
+    {
+        echo '# HELP telos_rpc_router_readiness Whether the router and all retained-history identity gates passed.'
+        echo '# TYPE telos_rpc_router_readiness gauge'
+        printf 'telos_rpc_router_readiness{network="%s"} %s\n' "$instance" "$status"
+        echo '# HELP telos_rpc_router_readiness_last_check_timestamp_seconds Unix time of the last completed router check.'
+        echo '# TYPE telos_rpc_router_readiness_last_check_timestamp_seconds gauge'
+        printf 'telos_rpc_router_readiness_last_check_timestamp_seconds{network="%s"} %s\n' \
+            "$instance" "$now"
+        echo '# HELP telos_rpc_router_readiness_last_success_timestamp_seconds Unix time of the last successful router check.'
+        echo '# TYPE telos_rpc_router_readiness_last_success_timestamp_seconds gauge'
+        printf 'telos_rpc_router_readiness_last_success_timestamp_seconds{network="%s"} %s\n' \
+            "$instance" "$last_success"
+        echo '# HELP telos_rpc_router_identity_match Whether the response matches every configured chain and history identity.'
+        echo '# TYPE telos_rpc_router_identity_match gauge'
+        printf 'telos_rpc_router_identity_match{network="%s"} %s\n' "$instance" "$identity_match"
+        echo '# HELP telos_rpc_router_live_head_block Live v2 backend head reported by router readiness.'
+        echo '# TYPE telos_rpc_router_live_head_block gauge'
+        printf 'telos_rpc_router_live_head_block{network="%s"} %s\n' "$instance" "$live_head"
+        echo '# HELP telos_rpc_router_archive_head_block Retained incumbent head reported by router readiness.'
+        echo '# TYPE telos_rpc_router_archive_head_block gauge'
+        printf 'telos_rpc_router_archive_head_block{network="%s"} %s\n' "$instance" "$archive_head"
+        echo '# HELP telos_rpc_router_common_head_block Common backend head validated by router readiness.'
+        echo '# TYPE telos_rpc_router_common_head_block gauge'
+        printf 'telos_rpc_router_common_head_block{network="%s"} %s\n' "$instance" "$common_head"
+        echo '# HELP telos_rpc_router_backend_head_lag_blocks Absolute live/incumbent head difference.'
+        echo '# TYPE telos_rpc_router_backend_head_lag_blocks gauge'
+        printf 'telos_rpc_router_backend_head_lag_blocks{network="%s"} %s\n' "$instance" "$head_lag"
+    } > "$tmp"
+    chmod 0644 "$tmp"
+    mv -f "$tmp" "$metrics_file"
+}
+
+finish() {
+    local rc=$? status=$success
+    trap - EXIT
+    [[ -z $response_file ]] || rm -f "$response_file"
+    [[ -z $parsed_file ]] || rm -f "$parsed_file"
+    now=$(date +%s) || {
+        now=0
+        status=0
+        rc=1
+    }
+    (( rc == 0 )) || status=0
+    if (( status == 1 )) && ! persist_last_success; then
+        echo "telos-rpc-router readiness [$instance]: could not persist successful check" >&2
+        status=0
+        rc=1
+    fi
+    if ! emit_metrics "$status"; then
+        echo "telos-rpc-router readiness [$instance]: could not publish metrics" >&2
+        rc=1
+    fi
+    exit "$rc"
+}
+trap finish EXIT
+
+die() {
+    echo "telos-rpc-router readiness [$instance] ($stage): $*" >&2
+    exit 1
+}
+
+stage=config
+[[ -f $config && ! -L $config && -r $config ]] || die "missing or unreadable $config"
+[[ $(realpath -e "$config") == "$config" ]] || die "$config must use its canonical path"
+[[ $(stat -c '%U:%G %a' "$(dirname "$config")") == 'root:telos-reth-config 750' ]] ||
+    die "the instance configuration directory must be root:telos-reth-config mode 0750"
+[[ $(stat -c '%U:%G %a' "$config") == 'root:telos-reth-config 440' ]] ||
+    die "$config must be root:telos-reth-config mode 0440"
+
+required_config=(
+    TELOS_RPC_ROUTER_LISTEN
+    TELOS_RPC_ROUTER_CHAIN_ID
+    TELOS_RPC_ROUTER_LIVE_HISTORY_START
+    TELOS_RPC_ROUTER_ANCHOR_HASH
+    TELOS_RPC_ROUTER_HISTORY_PROBE_NUMBER
+    TELOS_RPC_ROUTER_HISTORY_PROBE_HASH
+    TELOS_RPC_ROUTER_HISTORY_PROBE_ADDRESS
+    TELOS_RPC_ROUTER_HISTORY_PROBE_BALANCE
+    TELOS_RPC_ROUTER_HISTORY_PROBE_TRANSACTION_HASH
+    TELOS_RPC_ROUTER_MAX_HEAD_LAG
+)
+unset "${required_config[@]}"
+# shellcheck disable=SC1090
+source "$config"
+for name in "${required_config[@]}"; do
+    [[ -n ${!name:-} ]] || die "$name is not configured"
+done
+
+[[ $TELOS_RPC_ROUTER_CHAIN_ID =~ ^[1-9][0-9]*$ ]] ||
+    die "TELOS_RPC_ROUTER_CHAIN_ID is malformed"
+[[ $TELOS_RPC_ROUTER_LIVE_HISTORY_START =~ ^[1-9][0-9]*$ ]] ||
+    die "TELOS_RPC_ROUTER_LIVE_HISTORY_START is malformed"
+[[ $TELOS_RPC_ROUTER_HISTORY_PROBE_NUMBER =~ ^(0|[1-9][0-9]*)$ ]] ||
+    die "TELOS_RPC_ROUTER_HISTORY_PROBE_NUMBER is malformed"
+[[ $TELOS_RPC_ROUTER_MAX_HEAD_LAG =~ ^(0|[1-9][0-9]*)$ ]] ||
+    die "TELOS_RPC_ROUTER_MAX_HEAD_LAG is malformed"
+[[ $TELOS_RPC_ROUTER_ANCHOR_HASH =~ ^0x[0-9a-f]{64}$ ]] ||
+    die "TELOS_RPC_ROUTER_ANCHOR_HASH is malformed"
+[[ $TELOS_RPC_ROUTER_HISTORY_PROBE_HASH =~ ^0x[0-9a-f]{64}$ ]] ||
+    die "TELOS_RPC_ROUTER_HISTORY_PROBE_HASH is malformed"
+[[ $TELOS_RPC_ROUTER_HISTORY_PROBE_ADDRESS =~ ^0x[0-9a-f]{40}$ ]] ||
+    die "TELOS_RPC_ROUTER_HISTORY_PROBE_ADDRESS is malformed"
+[[ $TELOS_RPC_ROUTER_HISTORY_PROBE_BALANCE =~ ^0x(0|[1-9a-f][0-9a-f]*)$ ]] ||
+    die "TELOS_RPC_ROUTER_HISTORY_PROBE_BALANCE is malformed"
+[[ $TELOS_RPC_ROUTER_HISTORY_PROBE_TRANSACTION_HASH =~ ^0x[0-9a-f]{64}$ ]] ||
+    die "TELOS_RPC_ROUTER_HISTORY_PROBE_TRANSACTION_HASH is malformed"
+
+router_url=$(python3 - "$TELOS_RPC_ROUTER_LISTEN" <<'PY'
+import ipaddress
+import sys
+from urllib.parse import urlsplit
+
+value = sys.argv[1]
+try:
+    parsed = urlsplit("http://" + value)
+    if (
+        parsed.scheme != "http"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError
+    address = ipaddress.ip_address(parsed.hostname or "")
+    port = parsed.port
+    if not address.is_loopback or port is None:
+        raise ValueError
+except ValueError:
+    raise SystemExit("router listener must be an explicit loopback IP address and port")
+
+host = f"[{address}]" if address.version == 6 else str(address)
+print(f"http://{host}:{port}/readyz")
+PY
+) || die "TELOS_RPC_ROUTER_LISTEN is malformed or is not loopback"
+
+python3 - \
+    "$TELOS_RPC_ROUTER_CHAIN_ID" \
+    "$TELOS_RPC_ROUTER_LIVE_HISTORY_START" \
+    "$TELOS_RPC_ROUTER_HISTORY_PROBE_NUMBER" \
+    "$TELOS_RPC_ROUTER_MAX_HEAD_LAG" <<'PY' ||
+import sys
+
+chain_id, live_start, history_probe, max_lag = (int(value) for value in sys.argv[1:])
+if chain_id > 2**64 - 1 or live_start > 2**64 - 1 or history_probe > 2**64 - 1:
+    raise SystemExit("configured router identity exceeds an unsigned 64-bit integer")
+if max_lag > 2**64 - 1:
+    raise SystemExit("configured head lag exceeds an unsigned 64-bit integer")
+if history_probe >= live_start:
+    raise SystemExit("configured history probe must be below the live history boundary")
+PY
+    die "router numeric identity configuration is invalid"
+
+stage=service
+systemctl is-active --quiet "telos-rpc-router@${instance}.service" ||
+    die "router service is not active"
+
+stage=request
+response_file=$(mktemp "${state_dir}/readyz.XXXXXX")
+http_status=$(curl --silent --show-error --fail-with-body \
+    --connect-timeout 3 --max-time 20 --max-filesize 1048576 \
+    --proxy '' --proto '=http' \
+    --header 'Accept: application/json' \
+    --write-out '%{http_code}' \
+    --output "$response_file" "$router_url") ||
+    die "router /readyz request failed"
+[[ $http_status == 200 ]] || die "router /readyz did not return HTTP 200"
+
+stage=identity
+parsed_file=$(mktemp "${state_dir}/parsed.XXXXXX")
+python3 - \
+    "$response_file" \
+    "$TELOS_RPC_ROUTER_CHAIN_ID" \
+    "$TELOS_RPC_ROUTER_LIVE_HISTORY_START" \
+    "$TELOS_RPC_ROUTER_ANCHOR_HASH" \
+    "$TELOS_RPC_ROUTER_HISTORY_PROBE_NUMBER" \
+    "$TELOS_RPC_ROUTER_HISTORY_PROBE_HASH" \
+    "$TELOS_RPC_ROUTER_HISTORY_PROBE_ADDRESS" \
+    "$TELOS_RPC_ROUTER_HISTORY_PROBE_BALANCE" \
+    "$TELOS_RPC_ROUTER_HISTORY_PROBE_TRANSACTION_HASH" \
+    "$TELOS_RPC_ROUTER_MAX_HEAD_LAG" > "$parsed_file" <<'PY' ||
+import json
+import re
+import sys
+
+(
+    response_path,
+    expected_chain_id,
+    expected_live_start,
+    expected_anchor,
+    expected_history_number,
+    expected_history_hash,
+    expected_history_address,
+    expected_history_balance,
+    expected_history_transaction_hash,
+    configured_max_lag,
+) = sys.argv[1:]
+
+with open(response_path, "rb") as response:
+    value = json.load(response)
+
+if not isinstance(value, dict) or value.get("ready") is not True:
+    raise SystemExit("router response is not ready")
+
+
+def require_integer(name: str) -> int:
+    item = value.get(name)
+    if type(item) is not int or item < 0 or item > 2**64 - 1:
+        raise SystemExit(f"router response field {name} is not an unsigned 64-bit integer")
+    return item
+
+
+def require_hash(name: str) -> str:
+    item = value.get(name)
+    if not isinstance(item, str) or re.fullmatch(r"0x[0-9a-fA-F]{64}", item) is None:
+        raise SystemExit(f"router response field {name} is not a block hash")
+    return item.lower()
+
+
+def require_address(name: str) -> str:
+    item = value.get(name)
+    if not isinstance(item, str) or re.fullmatch(r"0x[0-9a-fA-F]{40}", item) is None:
+        raise SystemExit(f"router response field {name} is not an address")
+    return item.lower()
+
+
+def require_quantity(name: str) -> str:
+    item = value.get(name)
+    if not isinstance(item, str) or re.fullmatch(r"0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)", item) is None:
+        raise SystemExit(f"router response field {name} is not a canonical quantity")
+    return item.lower()
+
+
+chain_id = require_integer("chain_id")
+live_start = require_integer("live_history_start")
+history_number = require_integer("history_probe_number")
+anchor = require_hash("anchor_hash")
+history_hash = require_hash("history_probe_hash")
+history_address = require_address("history_probe_address")
+history_balance = require_quantity("history_probe_balance")
+history_transaction_hash = require_hash("history_probe_transaction_hash")
+live_head = require_integer("live_head")
+archive_head = require_integer("archive_head")
+common_head = require_integer("common_head")
+require_hash("common_hash")
+
+if chain_id != int(expected_chain_id):
+    raise SystemExit("router chain ID differs from router.env")
+if live_start != int(expected_live_start):
+    raise SystemExit("router live history boundary differs from router.env")
+if anchor != expected_anchor.lower():
+    raise SystemExit("router anchor hash differs from router.env")
+if history_number != int(expected_history_number):
+    raise SystemExit("router history probe number differs from router.env")
+if history_hash != expected_history_hash.lower():
+    raise SystemExit("router history probe hash differs from router.env")
+if history_address != expected_history_address.lower():
+    raise SystemExit("router history probe address differs from router.env")
+if history_balance != expected_history_balance.lower():
+    raise SystemExit("router history probe balance differs from router.env")
+if history_transaction_hash != expected_history_transaction_hash.lower():
+    raise SystemExit("router history probe transaction hash differs from router.env")
+if common_head != min(live_head, archive_head):
+    raise SystemExit("router common head is inconsistent with backend heads")
+
+head_lag = abs(live_head - archive_head)
+if head_lag > int(configured_max_lag):
+    raise SystemExit("router backend head lag exceeds router.env")
+
+print(live_head, archive_head, common_head, head_lag)
+PY
+    die "router /readyz identity validation failed"
+
+read -r live_head archive_head common_head head_lag < "$parsed_file" ||
+    die "router /readyz validated fields are unavailable"
+[[ $live_head =~ ^[0-9]+$ && $archive_head =~ ^[0-9]+$ &&
+   $common_head =~ ^[0-9]+$ && $head_lag =~ ^[0-9]+$ ]] ||
+    die "router /readyz validated fields are malformed"
+
+identity_match=1
+stage=ready
+success=1
+echo "telos-rpc-router readiness [$instance]: ready at common block $common_head" >&2

@@ -86,6 +86,11 @@ rechecks that seal immediately before promotion. Only then does it copy those
 already-signed digests to the semantic architecture and version tags; the
 multi-platform version tag is copied last.
 
+Each platform archive contains three release-built executables: `telos-reth`,
+`telos-checkpoint-bootstrap`, and `telos-rpc-router`. `BUILD-METADATA` records the SHA-256 of each.
+The container image remains the execution-client image; the router is installed from the signed
+platform archive under its hardened systemd unit.
+
 The publication tail is resumable for the same signed release tag. It refreshes
 assets on the exact existing draft, replaces same-name workflow artifacts on a
 full rerun, and accepts an existing semantic container tag only
@@ -125,8 +130,8 @@ cosign verify \
 ```
 
 The archive `BUILD-METADATA` file identifies both the Telos source commit and
-the exact upstream Paradigm Reth release/commit. Match those values against the
-release notes before deploying.
+the exact upstream Paradigm Reth release/commit, plus the execution, bootstrap, and router
+digests. Match those values against the release notes before deploying.
 
 ## Rollback and promotion
 

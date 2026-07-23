@@ -4,6 +4,10 @@ This procedure creates a **post-anchor-only** Telos Reth database. It is suitabl
 and then a production RPC whose advertised history starts at the checkpoint. It does not create a
 full archive node and must not be presented as one.
 
+To preserve older RPC history, deploy it beside the still-live incumbent using the
+[retained-history router](./history-routing.md). The incumbent remains required for pre-boundary
+requests, filter lifecycle, and `eth_feeHistory`.
+
 Telos' historical canonical headers carry `EMPTY_ROOT_HASH` even when EVM state is non-empty. The
 normal Reth `init-state` command therefore rejects them, correctly, and remains unchanged. The
 Telos-only importer instead requires all of the following to agree before it writes a completion

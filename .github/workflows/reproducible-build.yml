@@ -74,7 +74,11 @@ jobs:
         run: |
           test -x output/telos-reth
           test -x output/telos-checkpoint-bootstrap
-          sha256sum output/telos-checkpoint-bootstrap output/telos-reth \
+          test -x output/telos-rpc-router
+          sha256sum \
+            output/telos-checkpoint-bootstrap \
+            output/telos-reth \
+            output/telos-rpc-router \
             | sed 's#  output/#  #' > checksum.sha256
           cat checksum.sha256
           {
@@ -90,6 +94,7 @@ jobs:
             checksum.sha256
             output/telos-checkpoint-bootstrap
             output/telos-reth
+            output/telos-rpc-router
           if-no-files-found: error
           retention-days: 2
 

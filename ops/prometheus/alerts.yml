@@ -87,6 +87,40 @@ groups:
           summary: "Telos native chain source is stale for {{ $labels.network }}"
           description: "nodeos chain identity, LIB, or head freshness did not pass validation."
 
+  - name: telos-rpc-router-readiness
+    interval: 15s
+    rules:
+      - alert: TelosRpcRouterNotReady
+        expr: telos_rpc_router_readiness == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Telos RPC router {{ $labels.network }} is not ready"
+          description: "The loopback router, backend parity, or retained-history identity gate is failing. Remove the router from RPC rotation."
+
+      - alert: TelosRpcRouterReadinessCheckMissing
+        expr: time() - telos_rpc_router_readiness_last_check_timestamp_seconds > 90
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Telos RPC router {{ $labels.network }} readiness checks stopped"
+          description: "The fail-closed router checker has not completed for more than 90 seconds."
+
+      - alert: TelosRpcRouterReadinessMetricsMissing
+        expr: |
+          label_replace(
+            node_systemd_unit_state{name=~"telos-rpc-router-readiness@.+\\.timer",state="active"} == 1,
+            "network", "$1", "name", "telos-rpc-router-readiness@(.+)\\.timer"
+          ) unless on(network) telos_rpc_router_readiness_last_check_timestamp_seconds
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Telos RPC router {{ $labels.network }} readiness metrics never appeared"
+          description: "The router readiness timer is active but has not published a textfile metric."
+
   - name: telos-reth-backup
     interval: 1m
     rules:
@@ -142,13 +176,13 @@ groups:
     interval: 30s
     rules:
       - alert: TelosRethSystemdUnitDown
-        expr: node_systemd_unit_state{name=~"telos-(reth|consensus-client)@.+\\.service",state="active"} == 0
+        expr: node_systemd_unit_state{name=~"telos-(reth|rpc-router|consensus-client)@.+\\.service",state="active"} == 0
         for: 2m
         labels:
           severity: critical
         annotations:
           summary: "Systemd unit {{ $labels.name }} is not active"
-          description: "The execution or companion service is outside its required active state."
+          description: "The execution, retained-history router, or companion service is outside its required active state."
 
       - alert: TelosRethMetricsUnavailable
         expr: up{job="telos-reth"} == 0

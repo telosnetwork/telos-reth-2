@@ -1,27 +1,31 @@
 # Telos Reth production operations assets
 
 These files are a reference deployment for one network instance per systemd template (for example,
-`mainnet` or `testnet`). The execution client runs as the unprivileged `telos-reth` user. Only the
-coordinated snapshot service runs as root because it must stop two units and preserve database
-ownership.
+`mainnet` or `testnet`). The execution client and router run as separate unprivileged
+`telos-reth` and `telos-rpc-router` users. Only the coordinated snapshot service runs as root
+because it must stop two units and preserve database ownership.
 
 | Path | Purpose |
 | --- | --- |
 | `systemd/telos-reth@.service` | Locked-down execution service; secrets are systemd credentials |
+| `systemd/telos-rpc-router@.service` | Loopback-only sparse/live plus retained-history router |
 | `systemd/telos-consensus-client@.service` | Exact hardened companion service contract |
 | `systemd/telos-reth-readiness@.*` | JWT-authenticated, canonical-parity readiness every 30 seconds |
+| `systemd/telos-rpc-router-readiness@.*` | Router backend-identity readiness every 30 seconds |
 | `systemd/telos-reth-snapshot@.*` | Coordinated reflink snapshot, remote restic copy, and bounded data check |
 | `scripts/telos-reth-preflight` | Release digest, configuration, credential, and companion pin checks |
+| `scripts/telos-rpc-router-preflight` | Activated router release and signed digest pin |
 | `scripts/telos-reth-consensus-binding` | Exact systemd/runtime/config/data binding for the companion |
 | `scripts/telos-reth-engine-ready` | JWT-authenticated Engine gate before the companion starts |
 | `scripts/telos-reth-run` | Array-safe launcher for optional loopback WebSocket and transaction forwarding |
 | `scripts/telos-reth-readiness` | Fail-closed health gates and node_exporter textfile metrics |
+| `scripts/telos-rpc-router-readiness` | Fail-closed `/readyz` identity gates and router textfile metrics |
 | `scripts/telos-reth-snapshot` | Atomic checksum manifest, remote upload, and authenticated pack-data verification |
 | `scripts/telos-reth-restore` | Cold-host restore with a durable five-object transaction fence and resumable rollback |
 | `scripts/telos-reth-release` | Immutable release installation and atomic activation without restart |
 | `prometheus/alerts.yml` | Correctness, availability, durability, and capacity alerts |
 
-`node.env`, `consensus.toml`, and the checkpoint trio are shared read-only through the
+`node.env`, `router.env`, `consensus.toml`, and the checkpoint trio are shared read-only through the
 `telos-reth-config` group. `CONSENSUS_UNIT` is defined only in `node.env`; backup configuration may
 not override deployment identity. Snapshot and restore serialize on an instance lock inside
 `/var/lib/telos-reth-backup/<instance>`. Execution preflight also rejects a pending restore journal
@@ -31,6 +35,15 @@ The complete install, upgrade, rollback, recovery, and incident procedures are i
 [`docs/telos/operations.md`](../docs/telos/operations.md). Do not copy the old fork's `/tmp` state-diff
 handoff or journal-driven auto-restart daemon. State reconciliation belongs to the same
 JWT-authenticated Engine request, and canonical mismatches require quarantine and investigation.
+
+The sparse mainnet database is deployed beside the still-live incumbent, never as a replacement
+archive. `mainnet-router.env.example` binds the exact checkpoint and pre-Savanna
+block/state/receipt/log witnesses, and the router keeps filter lifecycle plus `eth_feeHistory` on
+the incumbent. These old-block witnesses qualify execution and history compatibility, not legacy
+finality timing. Only the router's loopback HTTP listener may sit behind the external TLS proxy,
+whose public policy remains `eth,net,web3`. See
+[`docs/telos/history-routing.md`](../docs/telos/history-routing.md) for the boundary, mandatory
+incumbent unit binding, shadow rollout, and failure semantics.
 
 Validate these assets on the target Linux distribution before installation:
 

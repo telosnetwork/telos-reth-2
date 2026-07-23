@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Telos retained-history router readiness checks (%i)
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=30s
+AccuracySec=1s
+RandomizedDelaySec=3s
+Unit=telos-rpc-router-readiness@%i.service
+
+[Install]
+WantedBy=timers.target

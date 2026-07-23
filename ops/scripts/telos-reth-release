@@ -22,7 +22,11 @@ component_paths() {
             release_root=/usr/local/lib/telos-consensus-client/releases
             active_link=/usr/local/bin/telos-consensus-client
             ;;
-        *) die "component must be execution or consensus" ;;
+        router)
+            release_root=/usr/local/lib/telos-rpc-router/releases
+            active_link=/usr/local/bin/telos-rpc-router
+            ;;
+        *) die "component must be execution, consensus, or router" ;;
     esac
 }
 
@@ -33,7 +37,7 @@ validate_version_and_digest() {
 
 case "$action" in
     install)
-        [[ $# -eq 4 ]] || die "usage: $0 install execution|consensus VERSION ARTIFACT SHA256"
+        [[ $# -eq 4 ]] || die "usage: $0 install execution|consensus|router VERSION ARTIFACT SHA256"
         component=$1
         version=$2
         artifact=$(realpath -e "$3")
@@ -61,7 +65,7 @@ case "$action" in
         echo "Installed $component $version at $target; it is not active yet." >&2
         ;;
     activate)
-        [[ $# -eq 3 ]] || die "usage: $0 activate execution|consensus VERSION SHA256"
+        [[ $# -eq 3 ]] || die "usage: $0 activate execution|consensus|router VERSION SHA256"
         component=$1
         version=$2
         digest=$3

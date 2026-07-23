@@ -111,6 +111,7 @@ members = [
     "crates/tasks/",
     "crates/telos/bin/",
     "crates/telos/node/",
+    "crates/telos/rpc-router/",
     "crates/telos/rpc-engine-api/",
     "crates/telos/rpc/",
     "crates/tokio-util/",

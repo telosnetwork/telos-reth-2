@@ -1,0 +1,193 @@
+{
+  "schema": "telos-reth/pre-savanna-runtime-execution-golden/v1",
+  "captured_at": "2026-07-23T18:28:50Z",
+  "data_classification": "operator-authenticated-no-secret-with-public-cross-check",
+  "network": {
+    "name": "mainnet",
+    "evm_chain_id": 40,
+    "native_chain_id": "4667b205c6838ef70ff7988f6e8257e8be0e1284a2f59699054a018f743b1d11",
+    "native_to_evm_block_delta": 36
+  },
+  "pre_savanna_binding": {
+    "fixture_native_block_number": 423015053,
+    "savanna_activation_block_number": 478429234,
+    "blocks_before_activation": 55414181,
+    "feature_codename": "SAVANNA",
+    "feature_digest": "cbe0fafc8fcc6cc998395e9b6de6ebd94644467b1b4a97ec126005df07013c52",
+    "operator_result_canonical_sha256": "74172285576312918539dd50bd08c64a0249b86256bbe9cd2c78dcf3633e9fac",
+    "source_method": "POST /v1/chain/get_activated_protocol_features on the operator-controlled rpc11 nodeos endpoint over its host-key-verified SSH alias",
+    "public_cross_check": "POST https://mainnet.telos.net/v1/chain/get_activated_protocol_features returned the same canonical SAVANNA feature object"
+  },
+  "provenance": {
+    "operator_transport": "preconfigured rpc11 SSH alias with host-key verification; RPC requests were read-only and made against loopback listeners",
+    "host_mutations": false,
+    "authenticated_ship_corpus": {
+      "path": "ship-mainnet-423015053.v1.json",
+      "native_block_id": "1936b28d33012e5e4352364ad163acc26ff5f896ef1a0dc71e12255aaa7fb05c",
+      "signed_block_record_sha256": "2cb2dde9453dfff8d99740a2167c593843a44f36e18788ced0b43483f4a2d7b9",
+      "trace_record_sha256": "d92ba7b62c91ceb4dac4db5fa883121dd23c09791113770c0a9d940432346737",
+      "chain_state_record_sha256": "a719acfdebd59f3053676cebdaea386719a8b6be76338c54785fab033486fab9",
+      "semantic_use": "authenticates native block identity, raw transaction bytes and order, receipt gas/status, starting context, and the terminal gas-price boundary"
+    },
+    "operator_evm_rpc": {
+      "endpoint": "http://127.0.0.1:8545 on rpc11 over the authenticated transport",
+      "block_number": "0x1936b269",
+      "responses": [
+        {
+          "method": "debug_traceBlockByNumber with prestateTracer diffMode=true",
+          "canonical_full_result_sha256": "8af538219bd7adca0500248caa49aa44d73477faff51cf776df86ae537b1274f"
+        },
+        {
+          "method": "eth_getBlockByNumber with full transactions",
+          "canonical_full_result_sha256": "ec7aa8205a097a62fd396dad365a237a1b28fcd40251a68fab722420b3d6f210"
+        },
+        {
+          "method": "eth_getBlockReceipts",
+          "canonical_full_result_sha256": "70453edc67cb6be151d4522e81b4e5e9f71335ee9c95d747ad21003daf4b98eb"
+        }
+      ],
+      "public_cross_check": {
+        "endpoint": "https://rpc.telos.net/evm",
+        "result": "all three canonical full-result hashes matched the operator-controlled production RPC"
+      }
+    }
+  },
+  "evidence": {
+    "block": {
+      "native_block_number": 423015053,
+      "native_block_id": "0x1936b28d33012e5e4352364ad163acc26ff5f896ef1a0dc71e12255aaa7fb05c",
+      "evm_block_number": 423015017,
+      "hash": "0x9af24c613ebf3ba3cbd8a29d9b4c24a0cf5589544a162dfe66c98f25a1ce55c0",
+      "parent_hash": "0x5c9fbb28e4c091a315f59e98063a2a25f8f9ef5413796215cdd4f9744994e292",
+      "ommers_hash": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+      "beneficiary": "0x0000000000000000000000000000000000000000",
+      "state_root": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+      "transactions_root": "0x443e22ab543ce4cc3eaf8eb967a0047d8e26cf516c19edda4244b4386f7c8a5b",
+      "receipts_root": "0xd95b673818fa493deec414e01e610d97ee287c9421c8eff4102b1647c1a184e4",
+      "logs_bloom": "zero",
+      "difficulty": "0x0",
+      "gas_limit": "0x7fffffff",
+      "gas_used": "0xa410",
+      "timestamp": "0x68b2131a",
+      "extra_data": "0x1936b28d33012e5e4352364ad163acc26ff5f896ef1a0dc71e12255aaa7fb05c",
+      "mix_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "nonce": "0x0000000000000000",
+      "base_fee_per_gas": null
+    },
+    "execution_context": {
+      "execution_base_fee": "0x0",
+      "starting_fixed_gas_price": "0x4c5b4d44112",
+      "starting_revision": 1,
+      "gas_price_changes": [
+        {
+          "boundary": 2,
+          "value": "0x4c5cea1a119"
+        }
+      ],
+      "revision_changes": [],
+      "child_fixed_gas_price": "0x4c5cea1a119",
+      "child_revision": 1
+    },
+    "transactions": [
+      {
+        "index": 0,
+        "raw": "0xf86e8263588604c5b4d44112825208941a7883121285dfe08fb89763d084d5c7966dcf92871b723a3bd74c5b801ca0e00c3809e27417fa151d2f170819b3f95620019c37243393c9e7153e36d9dbaaa04039cf37c8558899fb12c9e43fc0e8d8dbe1c5f5964f8df039a6a29034aacc49",
+        "hash": "0x411b585bf0b052f527b1924f500686d4b7c7cab9da18f81cbacfa4405bd15819",
+        "from": "0xe7c660f16b809d086bead0575ff869758a983035",
+        "to": "0x1a7883121285dfe08fb89763d084d5c7966dcf92",
+        "nonce": 25432,
+        "gas_limit": 21000,
+        "signed_gas_price": "0x4c5b4d44112",
+        "value": "0x1b723a3bd74c5b"
+      },
+      {
+        "index": 1,
+        "raw": "0xf86e825f6d8604c5b4d4411282520894efa81d85c1a439e2c79e797fcee1efde8525c206870cdd95996d85dc801ba08eac7437933c23a49245b6597d9aea9fba87d6ab933444a5086a866bf54cb007a069d14913345c3eace4a089172f117a2f24b009c464dcfadf313234bd558c7e6d",
+        "hash": "0x0f19f6c37a76fda3079782e6c54a1deb5ccb910684bf5606481cfcd98ba83a2f",
+        "from": "0xe5e8c33473273a2c72872a0b39a8a2b5e202895a",
+        "to": "0xefa81d85c1a439e2c79e797fcee1efde8525c206",
+        "nonce": 24429,
+        "gas_limit": 21000,
+        "signed_gas_price": "0x4c5b4d44112",
+        "value": "0xcdd95996d85dc"
+      }
+    ],
+    "pre_state": [
+      {
+        "address": "0x1a7883121285dfe08fb89763d084d5c7966dcf92",
+        "balance": "0x23af1250448c241f4",
+        "nonce": 35055,
+        "code": "0x"
+      },
+      {
+        "address": "0xe5e8c33473273a2c72872a0b39a8a2b5e202895a",
+        "balance": "0x3f56ff79211fa842",
+        "nonce": 24429,
+        "code": "0x"
+      },
+      {
+        "address": "0xe7c660f16b809d086bead0575ff869758a983035",
+        "balance": "0x523ef67be7c3c60b1",
+        "nonce": 25432,
+        "code": "0x"
+      },
+      {
+        "address": "0xefa81d85c1a439e2c79e797fcee1efde8525c206",
+        "balance": "0x172d39ec7af29fb",
+        "nonce": 24456,
+        "code": "0x"
+      }
+    ],
+    "post_state": [
+      {
+        "address": "0x1a7883121285dfe08fb89763d084d5c7966dcf92",
+        "balance": "0x23b0c973e84998e4f",
+        "nonce": 35055,
+        "code": "0x"
+      },
+      {
+        "address": "0xe5e8c33473273a2c72872a0b39a8a2b5e202895a",
+        "balance": "0x3dc2a7c9e43855d6",
+        "nonce": 24430,
+        "code": "0x"
+      },
+      {
+        "address": "0xe7c660f16b809d086bead0575ff869758a983035",
+        "balance": "0x5224c7b6a9ceb47c6",
+        "nonce": 25433,
+        "code": "0x"
+      },
+      {
+        "address": "0xefa81d85c1a439e2c79e797fcee1efde8525c206",
+        "balance": "0x17fb134611cafd7",
+        "nonce": 24456,
+        "code": "0x"
+      }
+    ],
+    "receipts": [
+      {
+        "transaction_hash": "0x411b585bf0b052f527b1924f500686d4b7c7cab9da18f81cbacfa4405bd15819",
+        "success": true,
+        "gas_used": 21000,
+        "cumulative_gas_used": 21000,
+        "effective_gas_price": "0x4c5b4d44112",
+        "logs": []
+      },
+      {
+        "transaction_hash": "0x0f19f6c37a76fda3079782e6c54a1deb5ccb910684bf5606481cfcd98ba83a2f",
+        "success": true,
+        "gas_used": 21000,
+        "cumulative_gas_used": 42000,
+        "effective_gas_price": "0x4c5b4d44112",
+        "logs": []
+      }
+    ]
+  },
+  "limitations": [
+    "This is a bounded revision-one EOA-transfer execution golden, not a claim that every pre-Savanna contract behavior has been replayed.",
+    "The harness places a test-only execution anchor at the fixture parent so the current sidecar-gated runtime can execute this historical block; it does not alter or bypass the production checkpoint anchor.",
+    "The account rows supplied to reconciliation are normalized from the operator RPC prestateTracer diff. The authenticated SHIP chain-state bytes remain separately pinned, but this test does not embed a second SHIP table-delta decoder.",
+    "Telos historical EVM headers expose the empty trie root placeholder. The test therefore asserts exact account post-state and receipts, not the placeholder state root as a state-integrity proof.",
+    "This fixture contains no finality, reversible-window, fork, or reorg assertion."
+  ]
+}

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+die() {
+    echo "telos-rpc-router preflight: $*" >&2
+    exit 1
+}
+
+[[ $# -eq 1 ]] || die "usage: $0 INSTANCE"
+instance=$1
+[[ $instance =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || die "invalid instance name"
+
+config=/etc/telos-reth/${instance}/router.env
+active_binary=/usr/local/bin/telos-rpc-router
+release_root=/usr/local/lib/telos-rpc-router/releases
+
+[[ -f $config && ! -L $config && -r $config ]] || die "router.env is unavailable"
+[[ $(stat -c '%U:%G:%a' "$config") == root:telos-reth-config:440 ]] ||
+    die "router.env must be root:telos-reth-config mode 0440"
+
+[[ ${TELOS_RPC_ROUTER_BINARY_SHA256:-} =~ ^[0-9a-f]{64}$ ]] ||
+    die "TELOS_RPC_ROUTER_BINARY_SHA256 must be a lowercase SHA-256 digest"
+[[ -x $active_binary ]] || die "active router binary is unavailable"
+resolved_binary=$(realpath -e "$active_binary") || die "cannot resolve active router binary"
+[[ $resolved_binary == "$release_root"/*/telos-rpc-router ]] ||
+    die "active router binary is not an activated versioned release"
+[[ -f $resolved_binary && ! -L $resolved_binary ]] ||
+    die "activated router target must be a regular file"
+[[ $(stat -c '%U:%G:%a' "$resolved_binary") == root:root:755 ]] ||
+    die "activated router target must be root:root mode 0755"
+
+actual_sha256=$(sha256sum "$resolved_binary" | cut -d ' ' -f 1)
+[[ $actual_sha256 == "$TELOS_RPC_ROUTER_BINARY_SHA256" ]] ||
+    die "activated router binary digest does not match router.env"

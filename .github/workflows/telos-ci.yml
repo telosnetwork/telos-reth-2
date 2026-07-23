@@ -244,6 +244,8 @@ jobs:
             scripts/telos/checkpoint/*.sh \
             scripts/telos/checkpoint/legacy-extractor/build-exact-legacy-extractor.sh
           python3 ops/tests/test_restore_transaction.py
+          python3 ops/tests/test_history_router_assets.py
+          python3 ops/tests/test_history_router_readiness.py
           bash ops/tests/test_snapshot_data_verification.sh
           python3 - <<'PY'
           from hashlib import sha256
@@ -298,6 +300,7 @@ jobs:
           sudo install -d -m 0755 /usr/local/libexec
           sudo install -m 0755 ops/scripts/* /usr/local/libexec/
           sudo install -m 0755 /bin/true /usr/local/bin/telos-reth
+          sudo install -m 0755 /bin/true /usr/local/bin/telos-rpc-router
           sudo install -m 0755 /bin/true /usr/local/bin/telos-consensus-client
           systemd-sysusers --dry-run "$GITHUB_WORKSPACE/ops/sysusers.d/telos-reth.conf"
           sudo systemd-sysusers "$GITHUB_WORKSPACE/ops/sysusers.d/telos-reth.conf"
@@ -308,6 +311,7 @@ jobs:
           mkdir -p package-input package-a package-b
           install -m 0755 /bin/true package-input/telos-reth
           install -m 0755 /bin/true package-input/telos-checkpoint-bootstrap
+          install -m 0755 /bin/true package-input/telos-rpc-router
           export SOURCE_DATE_EPOCH=1700000000
           package_args=(
             package-input/telos-reth 0.1.0 x86_64-unknown-linux-gnu
@@ -320,13 +324,34 @@ jobs:
           cmp "package-a/${archive}" "package-b/${archive}"
           tar -tzf "package-a/${archive}" \
             telos-reth-0.1.0-x86_64-unknown-linux-gnu/telos-checkpoint-bootstrap \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/telos-rpc-router \
             telos-reth-0.1.0-x86_64-unknown-linux-gnu/scripts/telos/checkpoint/legacy-extractor/build-exact-legacy-extractor.sh \
             telos-reth-0.1.0-x86_64-unknown-linux-gnu/scripts/telos/checkpoint/legacy-extractor/src/main.rs \
             telos-reth-0.1.0-x86_64-unknown-linux-gnu/ops/scripts/telos-reth-restore \
             telos-reth-0.1.0-x86_64-unknown-linux-gnu/ops/checkpoints/telos-mainnet/479294328/checkpoint.json \
             telos-reth-0.1.0-x86_64-unknown-linux-gnu/docs/telos/checkpoint-bootstrap.md \
             telos-reth-0.1.0-x86_64-unknown-linux-gnu/docs/telos/compatibility.md \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/docs/telos/history-routing.md \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/ops/config/mainnet-router.env.example \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/ops/systemd/telos-rpc-router@.service \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/ops/systemd/telos-rpc-router-readiness@.service \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/ops/systemd/telos-rpc-router-readiness@.timer \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/ops/scripts/telos-rpc-router-preflight \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/ops/scripts/telos-rpc-router-readiness \
             >/dev/null
+          mkdir package-inspect
+          tar -xzf "package-a/${archive}" --strip-components=1 -C package-inspect \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/BUILD-METADATA \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/telos-rpc-router
+          test -x package-inspect/telos-rpc-router
+          grep -Fxq "format_version=4" package-inspect/BUILD-METADATA
+          router_sha256=$(sha256sum package-inspect/telos-rpc-router | cut -d ' ' -f 1)
+          grep -Fxq "rpc_router_sha256=${router_sha256}" package-inspect/BUILD-METADATA
+          mv package-input/telos-rpc-router package-input/telos-rpc-router.missing
+          if scripts/release/package-telos.sh "${package_args[@]}" package-missing-router; then
+            echo "packaging succeeded without telos-rpc-router" >&2
+            exit 1
+          fi
 
   ci-success:
     name: telos / ci success

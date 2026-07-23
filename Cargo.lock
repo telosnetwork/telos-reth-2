@@ -12338,6 +12338,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "telos-rpc-router"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "futures",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "jsonrpsee-server",
+ "reqwest",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber 0.3.23",
+ "url",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

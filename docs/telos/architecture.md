@@ -116,6 +116,11 @@ only from a signed release record proving live companion ingestion, restart/reor
 finalized parity. Historical replay and diagnostic RPC have a separate gate that remains closed
 after canonical forward execution is qualified.
 
+The bootstrap database is sparse. Public historical RPC therefore uses the
+[retained-history router](./history-routing.md) with a still-live incumbent side by side. The
+router is not an archive and does not authorize incumbent retirement; the incumbent remains the
+backend for pre-boundary history, filter lifecycle, and `eth_feeHistory`.
+
 ## Upstream maintenance
 
 Upstream updates are rebased as auditable merge or cherry-pick series from signed stable Reth tags.

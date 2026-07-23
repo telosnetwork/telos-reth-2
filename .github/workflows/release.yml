@@ -200,6 +200,8 @@ jobs:
           fi
           test -x release-binary/telos-checkpoint-bootstrap
           release-binary/telos-checkpoint-bootstrap --help >/dev/null
+          test -x release-binary/telos-rpc-router
+          release-binary/telos-rpc-router --help >/dev/null
       - name: Package deterministic archive
         env:
           SOURCE_DATE_EPOCH: ${{ needs.metadata.outputs.source-date-epoch }}
@@ -305,13 +307,17 @@ jobs:
             --strip-components=1 \
             -C expected \
             "${ASSET_ROOT}/telos-reth" \
-            "${ASSET_ROOT}/telos-checkpoint-bootstrap"
+            "${ASSET_ROOT}/telos-checkpoint-bootstrap" \
+            "${ASSET_ROOT}/telos-rpc-router"
           test -x expected/telos-reth
           test -x expected/telos-checkpoint-bootstrap
+          test -x expected/telos-rpc-router
           test -x rebuild/telos-reth
           test -x rebuild/telos-checkpoint-bootstrap
+          test -x rebuild/telos-rpc-router
           cmp expected/telos-reth rebuild/telos-reth
           cmp expected/telos-checkpoint-bootstrap rebuild/telos-checkpoint-bootstrap
+          cmp expected/telos-rpc-router rebuild/telos-rpc-router
           sha256sum expected/telos-* rebuild/telos-*
 
   container-validation:
@@ -852,7 +858,7 @@ jobs:
             echo
             echo "### Verification"
             echo
-            echo "Every archive has an SPDX SBOM, Sigstore bundle, SHA-256 checksum, and GitHub build attestation. See \`docs/telos/release.md\`."
+            echo "Every archive includes the execution client, checkpoint bootstrap, and retained-history RPC router. It has an SPDX SBOM, Sigstore bundle, SHA-256 checksum, and GitHub build attestation. See \`docs/telos/release.md\`."
           } > release-notes.md
       - name: Create draft release
         id: release

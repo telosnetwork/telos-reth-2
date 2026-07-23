@@ -74,11 +74,17 @@ RUN test -n "${SOURCE_COMMIT}" && \
         --profile maxperf \
         --package telos-reth \
         --bin telos-reth \
-        --bin telos-checkpoint-bootstrap
+        --bin telos-checkpoint-bootstrap && \
+    LC_ALL=C TZ=UTC cargo auditable build \
+        --locked \
+        --profile maxperf \
+        --package telos-rpc-router \
+        --bin telos-rpc-router
 
 FROM scratch AS artifact
 COPY --from=builder /src/target/maxperf/telos-reth /telos-reth
 COPY --from=builder /src/target/maxperf/telos-checkpoint-bootstrap /telos-checkpoint-bootstrap
+COPY --from=builder /src/target/maxperf/telos-rpc-router /telos-rpc-router
 
 FROM ${RUNTIME_IMAGE} AS runtime-base
 

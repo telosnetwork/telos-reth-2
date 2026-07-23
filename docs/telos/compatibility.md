@@ -15,6 +15,7 @@ created by a different storage schema are not supported deployment inputs.
 | Telos EVM backend | Isolated revm 41 port; canonical startup gate open | Exact-build live qualification and signed release approval required; diagnostic replay remains closed |
 | Reth database | Storage V2 created by this client version | The signed release record must carry restore-test evidence |
 | Bootstrap snapshot | Mainnet sparse candidate at EVM block `479294328`; manifest SHA-256 `c3517da39d0ee8003434ce1e8ed5f304562a86656da1c666b1609a9ea2ae342e` | The signed release record must carry import, catch-up, restore, and live parity evidence |
+| Historical RPC | `telos-rpc-router` plus the still-live retained incumbent | Boundary hash and pre-Savanna block/state/receipt/log witnesses gate compatibility only; the incumbent remains required for old blocks, filter lifecycle, and `eth_feeHistory` |
 
 The companion reference above is an exact signed commit, not a floating deployment recommendation.
 A release may pair it only when the release record proves that its required CI and artifact build

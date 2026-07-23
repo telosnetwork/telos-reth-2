@@ -1,0 +1,58 @@
+[Unit]
+Description=Fail-closed Telos retained-history router readiness check (%i)
+Documentation=https://github.com/telosnetwork/telos-reth-2/blob/main/docs/telos/operations.md
+After=network-online.target telos-rpc-router@%i.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=telos-monitor
+Group=telos-monitor
+SupplementaryGroups=telos-reth-config
+UMask=0077
+StateDirectory=telos-reth-health/router-%i
+StateDirectoryMode=0700
+ExecStart=/usr/local/libexec/telos-rpc-router-readiness %i
+TimeoutStartSec=25s
+MemoryMax=128M
+MemorySwapMax=0
+TasksMax=48
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressAllow=localhost
+IPAddressDeny=any
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+ReadOnlyPaths=/etc/telos-reth
+ReadWritePaths=/var/lib/telos-reth-health/router-%i /var/lib/telos-reth-health/metrics
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=telos-rpc-router-readiness-%i
+
+[Install]
+WantedBy=multi-user.target
