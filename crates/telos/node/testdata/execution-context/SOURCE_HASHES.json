@@ -16,6 +16,10 @@
       "sha256": "10857c7612cdc137ad09b11cef1cb6adbe0c627459cf3450fed26cf6385591b1"
     },
     {
+      "path": "pre-savanna-runtime-mainnet-423015053.v1.json",
+      "sha256": "a6f38f3cff174ef828dea3b0ecaec3f643a6c93df5bf8fd85ddcf073d1be3e95"
+    },
+    {
       "path": "raw-transaction-mainnet-400000006.v1.json",
       "sha256": "45dfd55359f8f87515b06d04f14755b2b7c864a9cad2fc8ac24394e53bae9132"
     },
@@ -58,6 +62,24 @@
       "json_pointer": "/cases/4/evidence",
       "id": "testnet-setrevision-278492369",
       "sha256": "b8c9e5b5b17755b503d3d26fc72714b4c7494bc5afac6a6401a95388713b7ff8"
+    },
+    {
+      "path": "pre-savanna-runtime-mainnet-423015053.v1.json",
+      "json_pointer": "/pre_savanna_binding",
+      "id": "pre-savanna-runtime-binding",
+      "sha256": "ca6b34e0d12cd07b321b04d45fb153ff38ed718be894185af57468fc24a1c623"
+    },
+    {
+      "path": "pre-savanna-runtime-mainnet-423015053.v1.json",
+      "json_pointer": "/provenance",
+      "id": "pre-savanna-runtime-provenance",
+      "sha256": "585de3110a93375db8cfebb72b50bcaf5652b1fde09eb7bebd3d014449d2dee3"
+    },
+    {
+      "path": "pre-savanna-runtime-mainnet-423015053.v1.json",
+      "json_pointer": "/evidence",
+      "id": "pre-savanna-runtime-evidence",
+      "sha256": "d877d63628f40966b6d7b82667545ae5a34458e2c52b9d04642c9c3447b1858b"
     },
     {
       "path": "raw-transaction-mainnet-400000006.v1.json",

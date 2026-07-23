@@ -1,17 +1,48 @@
 //! Validates the provenance, integrity, and semantic correlations of Telos execution fixtures.
 
+use std::collections::BTreeSet;
+
 use alloy_primitives::{hex, keccak256};
 use serde_json::{Map, Value};
 
 const FIXTURE_DIRECTORY: &str = "../testdata/execution-context";
 const BOUNDARIES_PATH: &str = "boundaries.v1.json";
+const PRE_SAVANNA_RUNTIME_PATH: &str = "pre-savanna-runtime-mainnet-423015053.v1.json";
 const RAW_TRANSACTION_PATH: &str = "raw-transaction-mainnet-400000006.v1.json";
 const PROVENANCE_PATH: &str = "PROVENANCE.v1.json";
 const README_PATH: &str = "README.md";
 const SHIP_PATH: &str = "ship-mainnet-423015053.v1.json";
 const SHIP_VERIFIER_PATH: &str = "verify_ship_capture.py";
 
+const EXPECTED_HASHED_FILES: [&str; 7] = [
+    PROVENANCE_PATH,
+    README_PATH,
+    BOUNDARIES_PATH,
+    PRE_SAVANNA_RUNTIME_PATH,
+    RAW_TRANSACTION_PATH,
+    SHIP_PATH,
+    SHIP_VERIFIER_PATH,
+];
+const EXPECTED_CANONICAL_FRAGMENTS: [(&str, &str, &str); 14] = [
+    (BOUNDARIES_PATH, "/cases/0/evidence", "mainnet-init-180904219"),
+    (BOUNDARIES_PATH, "/cases/1/evidence", "mainnet-setrevision-332317532"),
+    (BOUNDARIES_PATH, "/cases/2/evidence", "testnet-init-136350055"),
+    (BOUNDARIES_PATH, "/cases/3/evidence", "testnet-setrevision-275001548"),
+    (BOUNDARIES_PATH, "/cases/4/evidence", "testnet-setrevision-278492369"),
+    (PRE_SAVANNA_RUNTIME_PATH, "/pre_savanna_binding", "pre-savanna-runtime-binding"),
+    (PRE_SAVANNA_RUNTIME_PATH, "/provenance", "pre-savanna-runtime-provenance"),
+    (PRE_SAVANNA_RUNTIME_PATH, "/evidence", "pre-savanna-runtime-evidence"),
+    (RAW_TRANSACTION_PATH, "/evidence/native_action", "raw-native-action"),
+    (RAW_TRANSACTION_PATH, "/evidence/native_deltas", "raw-native-deltas"),
+    (RAW_TRANSACTION_PATH, "/evidence/account_index_resolution", "raw-account-index-resolution"),
+    (RAW_TRANSACTION_PATH, "/evidence/evm_block", "raw-evm-block"),
+    (RAW_TRANSACTION_PATH, "/evidence/evm_receipt", "raw-evm-receipt"),
+    (RAW_TRANSACTION_PATH, "/evidence/debug_raw_transaction", "raw-debug-transaction"),
+];
+
 const BOUNDARIES_BYTES: &[u8] = include_bytes!("../testdata/execution-context/boundaries.v1.json");
+const PRE_SAVANNA_RUNTIME_BYTES: &[u8] =
+    include_bytes!("../testdata/execution-context/pre-savanna-runtime-mainnet-423015053.v1.json");
 const RAW_TRANSACTION_BYTES: &[u8] =
     include_bytes!("../testdata/execution-context/raw-transaction-mainnet-400000006.v1.json");
 const PROVENANCE_BYTES: &[u8] = include_bytes!("../testdata/execution-context/PROVENANCE.v1.json");
@@ -26,14 +57,23 @@ const SHIP_VERIFIER_BYTES: &[u8] =
 #[test]
 fn execution_context_fixture_corpus_is_self_consistent() {
     let boundaries = parse_json(BOUNDARIES_PATH, BOUNDARIES_BYTES);
+    let pre_savanna_runtime = parse_json(PRE_SAVANNA_RUNTIME_PATH, PRE_SAVANNA_RUNTIME_BYTES);
     let raw_transaction = parse_json(RAW_TRANSACTION_PATH, RAW_TRANSACTION_BYTES);
     let provenance = parse_json(PROVENANCE_PATH, PROVENANCE_BYTES);
+    let ship = parse_json(SHIP_PATH, SHIP_BYTES);
     let source_hashes = parse_json("SOURCE_HASHES.json", SOURCE_HASHES_BYTES);
 
     validate_boundary_fixtures(&boundaries);
+    validate_pre_savanna_runtime_fixture(&pre_savanna_runtime, &ship);
     validate_raw_transaction_fixture(&raw_transaction);
     validate_provenance(&provenance);
-    validate_source_hashes(&source_hashes, &boundaries, &raw_transaction, &provenance);
+    validate_source_hashes(
+        &source_hashes,
+        &boundaries,
+        &pre_savanna_runtime,
+        &raw_transaction,
+        &provenance,
+    );
 }
 
 fn validate_boundary_fixtures(fixture: &Value) {
@@ -123,6 +163,157 @@ fn validate_boundary_fixtures(fixture: &Value) {
             kind => panic!("{id}: unsupported schedule change kind {kind}"),
         }
     }
+}
+
+fn validate_pre_savanna_runtime_fixture(fixture: &Value, ship: &Value) {
+    assert_eq!(string_at(fixture, "/schema"), "telos-reth/pre-savanna-runtime-execution-golden/v1");
+
+    let native_block = u64_at(fixture, "/evidence/block/native_block_number");
+    let evm_block = u64_at(fixture, "/evidence/block/evm_block_number");
+    let delta = u64_at(fixture, "/network/native_to_evm_block_delta");
+    let savanna_activation =
+        u64_at(fixture, "/pre_savanna_binding/savanna_activation_block_number");
+    assert_eq!(
+        native_block.checked_sub(delta),
+        Some(evm_block),
+        "runtime fixture native-to-EVM block mapping"
+    );
+    assert_eq!(
+        u64_at(fixture, "/pre_savanna_binding/fixture_native_block_number"),
+        native_block,
+        "runtime fixture pre-Savanna binding"
+    );
+    assert_eq!(
+        savanna_activation.checked_sub(native_block),
+        Some(u64_at(fixture, "/pre_savanna_binding/blocks_before_activation")),
+        "runtime fixture distance before SAVANNA"
+    );
+
+    assert_eq!(
+        u64_at(ship, "/capture/native_block_number"),
+        native_block,
+        "runtime fixture/SHIP native block"
+    );
+    assert_eq!(
+        u64_at(ship, "/expected_translation/evm_block_number"),
+        evm_block,
+        "runtime fixture/SHIP EVM block"
+    );
+    assert_eq!(
+        u64_at(ship, "/network/native_to_evm_block_delta"),
+        delta,
+        "runtime fixture/SHIP block delta"
+    );
+    assert_hex_eq(
+        string_at(fixture, "/evidence/block/native_block_id"),
+        string_at(ship, "/capture/native_block_id"),
+        "runtime fixture/SHIP native block ID",
+    );
+    assert_hex_eq(
+        string_at(fixture, "/evidence/block/extra_data"),
+        string_at(fixture, "/evidence/block/native_block_id"),
+        "runtime fixture EVM extraData/native block binding",
+    );
+    assert_hex_eq(
+        string_at(fixture, "/provenance/authenticated_ship_corpus/native_block_id"),
+        string_at(ship, "/capture/native_block_id"),
+        "runtime fixture provenance/SHIP native block binding",
+    );
+
+    let transactions = array_at(fixture, "/evidence/transactions");
+    let receipts = array_at(fixture, "/evidence/receipts");
+    let trace_order = array_at(ship, "/expected_translation/trace_order");
+    let transaction_count = u64_at(ship, "/expected_translation/transaction_count");
+    assert_eq!(transactions.len(), transaction_count as usize);
+    assert_eq!(receipts.len(), transactions.len());
+    assert!(trace_order.len() >= transactions.len());
+
+    let mut cumulative_gas = 0u64;
+    for (index, ((transaction, receipt), trace)) in
+        transactions.iter().zip(receipts).zip(trace_order).enumerate()
+    {
+        assert_eq!(u64_at(transaction, "/index"), index as u64);
+        let raw = decode_hex(string_at(transaction, "/raw"));
+        let hash = format!("0x{}", hex::encode(keccak256(&raw)));
+        assert_hex_eq(&hash, string_at(transaction, "/hash"), "runtime transaction Keccak");
+        assert_hex_eq(
+            string_at(transaction, "/hash"),
+            string_at(trace, "/evm_transaction_hash"),
+            "runtime fixture/SHIP transaction hash",
+        );
+        assert_eq!(
+            raw,
+            decode_hex(string_at(trace, "/raw_transaction")),
+            "runtime fixture/SHIP raw transaction bytes"
+        );
+        assert_hex_eq(
+            string_at(transaction, "/signed_gas_price"),
+            string_at(fixture, "/evidence/execution_context/starting_fixed_gas_price"),
+            "runtime transaction starting gas price",
+        );
+        assert_hex_eq(
+            string_at(receipt, "/transaction_hash"),
+            string_at(transaction, "/hash"),
+            "runtime receipt transaction hash",
+        );
+        assert_eq!(
+            bool_at(receipt, "/success"),
+            parse_quantity(string_at(trace, "/receipt_status")) == 1,
+            "runtime fixture/SHIP receipt status"
+        );
+        let gas_used = u64_at(receipt, "/gas_used");
+        assert_eq!(
+            gas_used as u128,
+            parse_quantity(string_at(trace, "/receipt_gas_used")),
+            "runtime fixture/SHIP receipt gas"
+        );
+        cumulative_gas = cumulative_gas.checked_add(gas_used).expect("cumulative gas overflow");
+        assert_eq!(
+            u64_at(receipt, "/cumulative_gas_used"),
+            cumulative_gas,
+            "runtime receipt cumulative gas"
+        );
+    }
+    assert_eq!(
+        cumulative_gas as u128,
+        parse_quantity(string_at(fixture, "/evidence/block/gas_used")),
+        "runtime block/receipt gas"
+    );
+
+    assert_hex_eq(
+        string_at(fixture, "/evidence/execution_context/starting_fixed_gas_price"),
+        string_at(ship, "/expected_translation/starting_context/fixed_gas_price"),
+        "runtime fixture/SHIP starting gas price",
+    );
+    assert_eq!(
+        u64_at(fixture, "/evidence/execution_context/starting_revision"),
+        u64_at(ship, "/expected_translation/starting_context/revision"),
+        "runtime fixture/SHIP starting revision"
+    );
+    let runtime_changes = array_at(fixture, "/evidence/execution_context/gas_price_changes");
+    let ship_changes = array_at(ship, "/expected_translation/execution_changes");
+    assert_eq!(runtime_changes.len(), 1);
+    assert_eq!(ship_changes.len(), 1);
+    assert_eq!(
+        u64_at(&runtime_changes[0], "/boundary"),
+        u64_at(&ship_changes[0], "/boundary"),
+        "runtime fixture/SHIP gas-price boundary"
+    );
+    assert_hex_eq(
+        string_at(&runtime_changes[0], "/value"),
+        string_at(&ship_changes[0], "/value"),
+        "runtime fixture/SHIP changed gas price",
+    );
+    assert_hex_eq(
+        string_at(fixture, "/evidence/execution_context/child_fixed_gas_price"),
+        string_at(ship, "/expected_translation/child_context/fixed_gas_price"),
+        "runtime fixture/SHIP child gas price",
+    );
+    assert_eq!(
+        u64_at(fixture, "/evidence/execution_context/child_revision"),
+        u64_at(ship, "/expected_translation/child_context/revision"),
+        "runtime fixture/SHIP child revision"
+    );
 }
 
 fn validate_raw_transaction_fixture(fixture: &Value) {
@@ -261,6 +452,7 @@ fn validate_provenance(provenance: &Value) {
 fn validate_source_hashes(
     manifest: &Value,
     boundaries: &Value,
+    pre_savanna_runtime: &Value,
     raw_transaction: &Value,
     provenance: &Value,
 ) {
@@ -270,7 +462,16 @@ fn validate_source_hashes(
         "test-local SHA-256 implementation"
     );
 
-    for file in array_at(manifest, "/files") {
+    let files = array_at(manifest, "/files");
+    let actual_files = files.iter().map(|file| string_at(file, "/path")).collect::<BTreeSet<_>>();
+    assert_eq!(actual_files.len(), files.len(), "hash manifest contains duplicate file paths");
+    assert_eq!(
+        actual_files,
+        EXPECTED_HASHED_FILES.into_iter().collect::<BTreeSet<_>>(),
+        "hash manifest file inventory"
+    );
+
+    for file in files {
         let path = string_at(file, "/path");
         let bytes = fixture_file(path)
             .unwrap_or_else(|| panic!("hash manifest references unsupported file {path}"));
@@ -281,11 +482,34 @@ fn validate_source_hashes(
         );
     }
 
-    for fragment in array_at(manifest, "/canonical_fragments") {
+    let fragments = array_at(manifest, "/canonical_fragments");
+    let actual_fragments = fragments
+        .iter()
+        .map(|fragment| {
+            (
+                string_at(fragment, "/path"),
+                string_at(fragment, "/json_pointer"),
+                string_at(fragment, "/id"),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        actual_fragments.len(),
+        fragments.len(),
+        "hash manifest contains duplicate canonical fragment identities"
+    );
+    assert_eq!(
+        actual_fragments,
+        EXPECTED_CANONICAL_FRAGMENTS.into_iter().collect::<BTreeSet<_>>(),
+        "hash manifest canonical fragment inventory"
+    );
+
+    for fragment in fragments {
         let path = string_at(fragment, "/path");
         let pointer = string_at(fragment, "/json_pointer");
         let document = match path {
             BOUNDARIES_PATH => boundaries,
+            PRE_SAVANNA_RUNTIME_PATH => pre_savanna_runtime,
             RAW_TRANSACTION_PATH => raw_transaction,
             PROVENANCE_PATH => provenance,
             _ => panic!("hash manifest references unsupported JSON document {path}"),
@@ -305,6 +529,7 @@ fn validate_source_hashes(
 fn fixture_file(path: &str) -> Option<&'static [u8]> {
     match path {
         BOUNDARIES_PATH => Some(BOUNDARIES_BYTES),
+        PRE_SAVANNA_RUNTIME_PATH => Some(PRE_SAVANNA_RUNTIME_BYTES),
         RAW_TRANSACTION_PATH => Some(RAW_TRANSACTION_BYTES),
         PROVENANCE_PATH => Some(PROVENANCE_BYTES),
         README_PATH => Some(README_BYTES),
@@ -360,6 +585,13 @@ fn string_at<'a>(value: &'a Value, pointer: &str) -> &'a str {
         .pointer(pointer)
         .and_then(Value::as_str)
         .unwrap_or_else(|| panic!("fixture pointer {pointer} is not a string"))
+}
+
+fn bool_at(value: &Value, pointer: &str) -> bool {
+    value
+        .pointer(pointer)
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| panic!("fixture pointer {pointer} is not a bool"))
 }
 
 fn u64_at(value: &Value, pointer: &str) -> u64 {
