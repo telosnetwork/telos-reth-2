@@ -146,6 +146,7 @@ assert (
 
 unit = read("ops/systemd/telos-rpc-router@.service")
 for directive in (
+    "ConditionFileIsExecutable=/usr/local/bin/telos-rpc-router",
     "User=telos-rpc-router",
     "Group=telos-rpc-router",
     "EnvironmentFile=/etc/telos-reth/%i/router.env",
@@ -168,6 +169,14 @@ for directive in (
 ):
     assert directive in unit, f"missing router unit invariant: {directive}"
 assert "0.0.0.0" not in unit and "[::]" not in unit
+for unit_path, binary in (
+    ("ops/systemd/telos-reth@.service", "telos-reth"),
+    ("ops/systemd/telos-consensus-client@.service", "telos-consensus-client"),
+    ("ops/systemd/telos-rpc-router@.service", "telos-rpc-router"),
+):
+    unit_text = read(unit_path)
+    assert f"ConditionFileIsExecutable=/usr/local/bin/{binary}" in unit_text
+    assert "ConditionPathIsExecutable" not in unit_text
 assert 'u telos-rpc-router - "Telos retained-history RPC router"' in read(
     "ops/sysusers.d/telos-reth.conf"
 )
