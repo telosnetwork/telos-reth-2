@@ -200,12 +200,19 @@ where
         let current = revm_db.storage(row.address, row.key).map_err(|err| {
             ReconciliationError::Database { operation: "storage", message: err.to_string() }
         })?;
-        let expected = if row.removed { U256::ZERO } else { row.value };
-        if current != expected {
+        // A SHIP removal is a tombstone carrying the value before deletion. Local execution can
+        // therefore finish at zero (a terminal delete) or at that carried value (delete followed
+        // by restore). revm intentionally omits the latter from its net transition set.
+        let matches = if row.removed {
+            current == U256::ZERO || current == row.value
+        } else {
+            current == row.value
+        };
+        if !matches {
             return Err(ReconciliationError::StorageMismatch {
                 address: row.address,
                 key: row.key,
-                expected,
+                expected: if row.removed { U256::ZERO } else { row.value },
                 actual: current,
             })
         }
@@ -430,12 +437,28 @@ mod tests {
     }
 
     #[test]
-    fn rejects_storage_removal_not_performed_locally() {
+    fn accepts_removed_storage_tombstone_value_after_restore() {
         let address = address!("0x4000000000000000000000000000000000000000");
         let key = U256::ZERO;
         let mut db = CacheDB::<EmptyDB>::default();
         db.insert_account_info(address, AccountInfo::default());
         db.insert_account_storage(address, key, U256::from(7)).unwrap();
+        let mut state = State::builder().with_database(db).with_bundle_update().build();
+        let row = TelosAccountStateTableRow { removed: true, address, key, value: U256::from(7) };
+
+        let report = reconcile_state_diffs(&mut state, &fields(Vec::new(), vec![row])).unwrap();
+
+        assert!(report.is_empty());
+        assert_eq!(state.storage(address, key).unwrap(), U256::from(7));
+    }
+
+    #[test]
+    fn rejects_removed_storage_tombstone_value_mismatch() {
+        let address = address!("0x4100000000000000000000000000000000000000");
+        let key = U256::from(12);
+        let mut db = CacheDB::<EmptyDB>::default();
+        db.insert_account_info(address, AccountInfo::default());
+        db.insert_account_storage(address, key, U256::from(8)).unwrap();
         let mut state = State::builder().with_database(db).with_bundle_update().build();
         let row = TelosAccountStateTableRow { removed: true, address, key, value: U256::from(7) };
 
@@ -447,10 +470,10 @@ mod tests {
                 address,
                 key,
                 expected: U256::ZERO,
-                actual: U256::from(7),
+                actual: U256::from(8),
             }
         );
-        assert_eq!(state.storage(address, key).unwrap(), U256::from(7));
+        assert_eq!(state.storage(address, key).unwrap(), U256::from(8));
     }
 
     #[test]
