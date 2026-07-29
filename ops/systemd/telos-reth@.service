@@ -5,7 +5,7 @@ Wants=network-online.target
 After=network-online.target
 StartLimitIntervalSec=15min
 StartLimitBurst=3
-ConditionPathIsExecutable=/usr/local/bin/telos-reth
+ConditionFileIsExecutable=/usr/local/bin/telos-reth
 ConditionPathExists=/etc/telos-reth/%i/node.env
 
 [Service]

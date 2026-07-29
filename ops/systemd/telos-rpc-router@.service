@@ -6,7 +6,7 @@ After=network-online.target telos-reth@%i.service
 Requires=telos-reth@%i.service
 StartLimitIntervalSec=15min
 StartLimitBurst=6
-ConditionPathIsExecutable=/usr/local/bin/telos-rpc-router
+ConditionFileIsExecutable=/usr/local/bin/telos-rpc-router
 ConditionPathExists=/etc/telos-reth/%i/router.env
 
 [Service]
