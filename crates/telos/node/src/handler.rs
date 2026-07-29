@@ -162,6 +162,12 @@ fn validate_and_deduct<DB: Database>(
     let new_balance = calculate_telos_caller_fee(balance, tx, block, cfg)?;
     caller.set_balance(new_balance);
 
+    // Native execution accepts nonce one for a previously empty account. Align that exception
+    // before the operation-specific increment: calls advance here, while CREATE advances during
+    // frame initialization and must use nonce one to derive the contract address.
+    if tx.nonce() == 1 && caller.nonce() == 0 {
+        caller.bump_nonce();
+    }
     if tx.kind().is_call() {
         caller.bump_nonce();
     }
@@ -174,9 +180,6 @@ fn validate_and_deduct<DB: Database>(
     }
     if tx.caller().is_zero() {
         caller.set_nonce(0);
-    }
-    if tx.nonce() == 1 && caller.nonce() == 1 {
-        caller.bump_nonce();
     }
     Ok(())
 }
@@ -318,6 +321,21 @@ mod tests {
         let caller = Address::repeat_byte(0x11);
         let output = evm_with_caller(caller, 0).transact_raw(transaction(caller, 1, true)).unwrap();
         assert_eq!(output.state.get(&caller).unwrap().info.nonce, 2);
+    }
+
+    #[test]
+    fn native_create_uses_transaction_nonce_for_sender_progression() {
+        let caller = Address::repeat_byte(0x11);
+        for state_nonce in [0, 1] {
+            let mut tx = transaction(caller, 1, true);
+            tx.inner.kind = TxKind::Create;
+            tx.inner.gas_limit = 100_000;
+            tx.inner.data = Bytes::from_static(&[0x00]);
+
+            let output = evm_with_caller(caller, state_nonce).transact_raw(tx).unwrap();
+
+            assert_eq!(output.state.get(&caller).unwrap().info.nonce, 2);
+        }
     }
 
     #[test]
