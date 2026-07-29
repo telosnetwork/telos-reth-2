@@ -163,7 +163,7 @@ for parent in /var/lib /var/lib/telos-reth /var/lib/telos-consensus \
     /usr/local/libexec; do
     if [[ -e $parent || -L $parent ]]; then
         [[ -d $parent && ! -L $parent && $(realpath -e "$parent") == "$parent" &&
-           $(stat -c '%U' "$parent") == root ]] || {
+           $(stat -c '%u' "$parent") == 0 ]] || {
             echo "refusing unsafe restore integration parent: $parent" >&2
             exit 1
         }
