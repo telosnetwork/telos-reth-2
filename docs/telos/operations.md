@@ -32,10 +32,10 @@ side-by-side mainnet example), a JWT, a signer credential, `debug`, `admin`, or 
 methods.
 
 The mainnet checkpoint database begins at EVM block `479294328`; it is not a standalone archive.
-Preserve historical RPC by keeping the incumbent live beside v2 and using the loopback
-[`telos-rpc-router`](./history-routing.md). Only the router may become the TLS proxy upstream, and
-the public namespace policy remains `eth,net,web3`. The retained incumbent remains required for
-pre-boundary requests, filter lifecycle, and `eth_feeHistory`.
+Preserve historical RPC with a separately copied and continuously fed archive plus the loopback
+[`telos-rpc-router`](./history-routing.md). Keep the incumbent untouched beside both during
+qualification. Only the router may become the TLS proxy upstream, and the public namespace policy
+remains `eth,net,web3`.
 
 The supported production JSON-RPC namespace allowlist is `eth,net,web3`. In addition to the proxy
 allowlist, the binary has an independent replay-safety gate: until historical Telos replay is
@@ -122,11 +122,12 @@ every placeholder, quote the exact companion `--version` output, and pin both bi
 the lowercase, non-prefixed SHA-256 of `checkpoint.json`. `CONSENSUS_UNIT` appears only in
 `node.env`; `backup.env` must never override deployment identity.
 
-For mainnet, also copy `mainnet-router.env.example` to `router.env`. Keep the incumbent on its
-existing loopback port, set the v2 `HTTP_PORT` to the router example's distinct live port, and do
-not point either router backend at the external proxy. The exact boundary hash and pre-Savanna
-block, balance, receipt, and empty-log witnesses in the example are part of readiness and must not
-be replaced with a convenient recent block. Replace `TELOS_RPC_ROUTER_BINARY_SHA256` with
+For mainnet, also install `mainnet-archive.env.example`,
+`mainnet-archive-consensus.toml.example`, and `mainnet-router.env.example`. Keep the incumbent on
+its existing loopback port, set the v2 and archive RPCs to their distinct example ports, and do not
+point either router backend at the external proxy. The exact boundary hash and historical block,
+balance, receipt, and empty-log witnesses are part of readiness and must not be replaced with a
+convenient recent block. Replace `TELOS_RPC_ROUTER_BINARY_SHA256` with
 `rpc_router_sha256` from the authenticated archive metadata; the unit preflight requires the
 activated versioned binary to match it.
 
@@ -136,6 +137,11 @@ sudo install -o root -g telos-reth-config -m 0440 ops/config/mainnet.env.example
   /etc/telos-reth/mainnet/node.env
 sudo install -o root -g telos-reth-config -m 0440 ops/config/mainnet-router.env.example \
   /etc/telos-reth/mainnet/router.env
+sudo install -o root -g telos-reth-config -m 0440 ops/config/mainnet-archive.env.example \
+  /etc/telos-reth/mainnet/archive.env
+sudo install -o root -g telos-reth-config -m 0440 \
+  ops/config/mainnet-archive-consensus.toml.example \
+  /etc/telos-reth/mainnet/archive-consensus.toml
 sudo install -o root -g root -m 0600 ops/config/backup.env.example \
   /etc/telos-reth/mainnet/backup.env
 sudo sed -i 's/REPLACE_WITH_INSTANCE/mainnet/g' /etc/telos-reth/mainnet/backup.env
@@ -215,7 +221,7 @@ Start the execution layer first, then its companion. A public load balancer must
 until the readiness metric is `1` and its last-check timestamp is less than 60 seconds old.
 
 Before starting the router, add the mandatory systemd drop-in that `Requires` and orders it after
-the exact retained-incumbent unit as described in
+the exact retained archive and archive-companion units as described in
 [`history-routing.md`](./history-routing.md). The repository unit already requires the v2
 `telos-reth@<instance>` service. Initially keep the TLS proxy on the incumbent and use the router
 only for shadow/test requests.
@@ -223,6 +229,8 @@ only for shadow/test requests.
 ```bash
 sudo systemctl enable --now telos-reth@mainnet.service
 sudo systemctl enable --now telos-consensus-client@mainnet.service
+sudo systemctl enable --now telos-reth-archive@mainnet.service
+sudo systemctl enable --now telos-reth-archive-consensus@mainnet.service
 sudo systemctl enable --now telos-reth-readiness@mainnet.timer
 sudo systemctl enable --now telos-reth-snapshot@mainnet.timer
 sudo systemctl start --wait telos-reth-readiness@mainnet.service
@@ -232,9 +240,8 @@ sudo systemctl start --wait telos-rpc-router-readiness@mainnet.service
 curl --fail --silent http://127.0.0.1:8645/readyz | jq .
 ```
 
-Before public cutover, require either an incumbent listener bound only to loopback or host firewall
-rules that reject every non-loopback source to that listener. A loopback router backend URL does
-not make an incumbent that also binds a public interface safe. After that isolation gate and
+Before public cutover, require every execution and router listener to bind only to loopback or have
+host firewall rules rejecting every non-loopback source. After that isolation gate and three-way
 shadow parity are accepted, change only the external TLS proxy's loopback upstream to the router.
 Its internal health check must use `/readyz`, while public routing must continue to expose only
 allowed `eth`, `net`, and `web3` JSON-RPC methods. Do not stop or delete the incumbent after this
@@ -269,7 +276,7 @@ strengthen it; weakening or disabling finalized parity requires a release risk r
 
 The separate `telos-rpc-router-readiness` job calls only the configured loopback `/readyz`
 listener. It requires `ready: true`, rechecks the configured chain ID, sparse-history boundary,
-anchor, retained pre-Savanna block/state/receipt/log witnesses, common head, and backend head-lag
+anchor, retained historical block/state/receipt/log witnesses, common head, and backend head-lag
 bound, then atomically publishes fixed-cardinality `telos_rpc_router_*` textfile metrics. Its
 timer, metrics, and last-check timestamp are independent fail-closed pager gates; router process
 liveness alone is not sufficient for rotation.
@@ -373,14 +380,13 @@ Upgrade one replica at a time. Never restart all RPC replicas or both failure do
    24 hours before the next replica.
 
 When the router changes, install and activate its independently recorded digest while public
-traffic still points to the incumbent. Re-run the boundary, pre-Savanna probe, cross-boundary logs,
+traffic still points to the incumbent. Re-run the boundary, historical probe, cross-boundary logs,
 filter-lifecycle, and `eth_feeHistory` checks before returning the proxy to the router. Router or v2
 rollback does not authorize incumbent shutdown or data deletion.
 
-The pre-Savanna corpus above qualifies execution and historical RPC compatibility only. Do not
-spend a promotion soak or fault campaign reproducing the slower pre-Savanna finality regime.
-Finality advancement, recovery, and promotion-soak evidence for this release must be captured under
-operational post-Savanna instant finality.
+Historical blocks use the same execution format as current blocks; the historical corpus qualifies
+availability and RPC behavior. Finality advancement, recovery, and promotion-soak evidence must be
+captured against current mainnet operation.
 
 For a code-only rollback with no database format change, drain the node, stop companion then
 execution, activate the prior pinned release pair, start execution then companion, and require all

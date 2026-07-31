@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+die() {
+    echo "telos-reth archive: $*" >&2
+    exit 1
+}
+
+[[ $# -eq 2 ]] || die "usage: $0 INSTANCE JWT_CREDENTIAL"
+instance=$1
+jwt=$2
+[[ $instance =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || die "invalid instance name"
+
+required=(
+    ARCHIVE_BINARY ARCHIVE_BINARY_SHA256 ARCHIVE_DATADIR ARCHIVE_CHAIN ARCHIVE_CHAIN_ID ARCHIVE_HTTP_PORT
+    ARCHIVE_AUTHRPC_PORT ARCHIVE_P2P_PORT ARCHIVE_METRICS_PORT ARCHIVE_HTTP_API
+)
+for name in "${required[@]}"; do
+    [[ -n ${!name:-} ]] || die "$name is not configured"
+done
+
+[[ $ARCHIVE_BINARY == /usr/local/lib/telos-reth-archive/releases/*/telos-reth ]] ||
+    die "ARCHIVE_BINARY is not a versioned retained-backend release"
+[[ -x $ARCHIVE_BINARY && ! -L $ARCHIVE_BINARY ]] || die "archive binary is unavailable"
+[[ $ARCHIVE_BINARY_SHA256 =~ ^[0-9a-f]{64}$ ]] || die "archive digest is malformed"
+[[ $(sha256sum "$ARCHIVE_BINARY" | cut -d ' ' -f 1) == "$ARCHIVE_BINARY_SHA256" ]] ||
+    die "archive binary digest differs"
+[[ $ARCHIVE_DATADIR == "/var/lib/telos-reth-archive/${instance}" ]] ||
+    die "archive datadir differs from the hardened service path"
+[[ -d $ARCHIVE_DATADIR && ! -L $ARCHIVE_DATADIR ]] || die "archive datadir is unavailable"
+[[ $(stat -c '%U:%G' "$ARCHIVE_DATADIR") == telos-reth-archive:telos-reth-archive ]] ||
+    die "archive datadir ownership differs"
+[[ -r $jwt && ! -L $jwt && $(stat -c '%a' "$jwt") == 400 ]] ||
+    die "archive JWT credential is unavailable"
+[[ $ARCHIVE_HTTP_API == admin,debug,eth,net,ots,reth,rpc,trace,txpool,web3 ]] ||
+    die "archive HTTP module policy differs"
+[[ $ARCHIVE_CHAIN == tevmmainnet ]] || die "archive chain selector differs"
+[[ $ARCHIVE_CHAIN_ID == 40 ]] || die "archive chain ID differs"
+
+ports=()
+for name in ARCHIVE_HTTP_PORT ARCHIVE_AUTHRPC_PORT ARCHIVE_P2P_PORT ARCHIVE_METRICS_PORT; do
+    value=${!name}
+    [[ $value =~ ^[1-9][0-9]{0,4}$ && $value -le 65535 ]] || die "$name is invalid"
+    ports+=("$value")
+done
+[[ $(printf '%s\n' "${ports[@]}" | sort -u | wc -l) -eq ${#ports[@]} ]] ||
+    die "archive ports must be distinct"
+
+exec "$ARCHIVE_BINARY" node \
+    --chain "$ARCHIVE_CHAIN" \
+    --datadir "$ARCHIVE_DATADIR" \
+    --http \
+    --http.addr 127.0.0.1 \
+    --http.port "$ARCHIVE_HTTP_PORT" \
+    --http.api "$ARCHIVE_HTTP_API" \
+    --authrpc.addr 127.0.0.1 \
+    --authrpc.port "$ARCHIVE_AUTHRPC_PORT" \
+    --authrpc.jwtsecret "$jwt" \
+    --metrics "127.0.0.1:${ARCHIVE_METRICS_PORT}" \
+    --ipcdisable \
+    --rpc.max-connections 256 \
+    --rpc.max-request-size 15 \
+    --addr 127.0.0.1 \
+    --port "$ARCHIVE_P2P_PORT" \
+    --disable-discovery \
+    --disable-dns-discovery \
+    --trusted-only \
+    --max-inbound-peers 0 \
+    --max-outbound-peers 0 \
+    --no-persist-peers \
+    --nat none

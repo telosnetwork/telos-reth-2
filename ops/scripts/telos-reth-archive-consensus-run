@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+die() {
+    echo "telos-reth archive consensus: $*" >&2
+    exit 1
+}
+
+[[ $# -eq 2 ]] || die "usage: $0 INSTANCE JWT_CREDENTIAL"
+instance=$1
+jwt=$2
+[[ $instance =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || die "invalid instance name"
+[[ ${ARCHIVE_CONSENSUS_BINARY:-} == /usr/local/bin/telos-consensus-client ]] ||
+    die "archive companion binary path differs"
+[[ -x $ARCHIVE_CONSENSUS_BINARY ]] || die "archive companion binary is unavailable"
+[[ ${ARCHIVE_CONSENSUS_BINARY_SHA256:-} =~ ^[0-9a-f]{64}$ ]] ||
+    die "archive companion digest is malformed"
+[[ $(sha256sum "$ARCHIVE_CONSENSUS_BINARY" | cut -d ' ' -f 1) == \
+    "$ARCHIVE_CONSENSUS_BINARY_SHA256" ]] || die "archive companion digest differs"
+[[ ${ARCHIVE_CONSENSUS_CONFIG:-} == "/etc/telos-reth/${instance}/archive-consensus.toml" ]] ||
+    die "archive companion config path differs"
+[[ -f $ARCHIVE_CONSENSUS_CONFIG && ! -L $ARCHIVE_CONSENSUS_CONFIG ]] ||
+    die "archive companion config is unavailable"
+[[ $(stat -c '%U:%G:%a' "$ARCHIVE_CONSENSUS_CONFIG") == root:telos-reth-config:440 ]] ||
+    die "archive companion config metadata differs"
+[[ -r $jwt && ! -L $jwt && $(stat -c '%a' "$jwt") == 400 ]] ||
+    die "archive JWT credential is unavailable"
+
+python3 -I -B - "$ARCHIVE_CONSENSUS_CONFIG" "$instance" "$jwt" \
+    "$ARCHIVE_CHAIN_ID" "$ARCHIVE_AUTHRPC_PORT" <<'PY'
+import pathlib
+import sys
+import tomllib
+
+config_path, instance, jwt, chain_id, authrpc_port = sys.argv[1:]
+with open(config_path, "rb") as source:
+    config = tomllib.load(source)
+expected_data = f"/var/lib/telos-reth-archive-consensus/{instance}"
+if config.get("chain_id") != int(chain_id):
+    raise SystemExit("archive companion chain ID differs")
+if config.get("execution_endpoint") != f"http://127.0.0.1:{authrpc_port}":
+    raise SystemExit("archive companion Engine endpoint differs")
+if config.get("jwt_secret_path") != jwt:
+    raise SystemExit("archive companion JWT path differs from its private credential")
+if config.get("data_path") != expected_data:
+    raise SystemExit("archive companion data path differs")
+if pathlib.Path(config_path).resolve() != pathlib.Path(config_path):
+    raise SystemExit("archive companion config path is not canonical")
+PY
+
+exec "$ARCHIVE_CONSENSUS_BINARY" --config "$ARCHIVE_CONSENSUS_CONFIG"

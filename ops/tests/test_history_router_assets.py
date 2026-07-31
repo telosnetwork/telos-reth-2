@@ -27,6 +27,7 @@ def parse_environment(path: str) -> dict[str, str]:
 
 router_environment = parse_environment("ops/config/mainnet-router.env.example")
 node_environment = parse_environment("ops/config/mainnet.env.example")
+archive_environment = parse_environment("ops/config/mainnet-archive.env.example")
 required_environment = {
     "TELOS_RPC_ROUTER_BINARY_SHA256",
     "TELOS_RPC_ROUTER_LISTEN",
@@ -71,7 +72,38 @@ assert int(listen_port) not in backend_ports
 assert urlparse(router_environment["TELOS_RPC_ROUTER_LIVE_URL"]).port == int(
     node_environment["HTTP_PORT"]
 )
-assert urlparse(router_environment["TELOS_RPC_ROUTER_ARCHIVE_URL"]).port == 8545
+assert urlparse(router_environment["TELOS_RPC_ROUTER_ARCHIVE_URL"]).port == 28545
+assert archive_environment.keys() == {
+    "ARCHIVE_BINARY",
+    "ARCHIVE_BINARY_SHA256",
+    "ARCHIVE_DATADIR",
+    "ARCHIVE_CHAIN",
+    "ARCHIVE_CHAIN_ID",
+    "ARCHIVE_HTTP_PORT",
+    "ARCHIVE_AUTHRPC_PORT",
+    "ARCHIVE_P2P_PORT",
+    "ARCHIVE_METRICS_PORT",
+    "ARCHIVE_HTTP_API",
+    "ARCHIVE_CONSENSUS_BINARY",
+    "ARCHIVE_CONSENSUS_BINARY_SHA256",
+    "ARCHIVE_CONSENSUS_CONFIG",
+}
+assert archive_environment["ARCHIVE_DATADIR"] == "/var/lib/telos-reth-archive/mainnet"
+assert archive_environment["ARCHIVE_CHAIN"] == "tevmmainnet"
+assert archive_environment["ARCHIVE_CHAIN_ID"] == "40"
+assert int(archive_environment["ARCHIVE_HTTP_PORT"]) == urlparse(
+    router_environment["TELOS_RPC_ROUTER_ARCHIVE_URL"]
+).port
+archive_ports = {
+    int(archive_environment[name])
+    for name in (
+        "ARCHIVE_HTTP_PORT",
+        "ARCHIVE_AUTHRPC_PORT",
+        "ARCHIVE_P2P_PORT",
+        "ARCHIVE_METRICS_PORT",
+    )
+}
+assert len(archive_ports) == 4
 assert node_environment["HTTP_API"] == "eth,net,web3"
 assert node_environment["WS_API"] == "eth,net,web3"
 assert f'127.0.0.1:{node_environment["METRICS_PORT"]}' in read(
@@ -180,6 +212,42 @@ for unit_path, binary in (
 assert 'u telos-rpc-router - "Telos retained-history RPC router"' in read(
     "ops/sysusers.d/telos-reth.conf"
 )
+assert 'u telos-reth-archive - "Telos retained-history backend"' in read(
+    "ops/sysusers.d/telos-reth.conf"
+)
+assert 'u telos-reth-archive-consensus - "Telos retained-history companion"' in read(
+    "ops/sysusers.d/telos-reth.conf"
+)
+
+archive_unit = read("ops/systemd/telos-reth-archive@.service")
+archive_companion_unit = read("ops/systemd/telos-reth-archive-consensus@.service")
+for directive in (
+    "User=telos-reth-archive",
+    "LoadCredential=archive-jwt.hex:/etc/telos-reth/%i/archive-jwt.hex",
+    "ExecStart=/usr/local/libexec/telos-reth-archive-run %i %d/archive-jwt.hex",
+    "IPAddressAllow=localhost",
+    "IPAddressDeny=any",
+    "ReadWritePaths=/var/lib/telos-reth-archive/%i",
+):
+    assert directive in archive_unit, f"missing archive unit invariant: {directive}"
+for directive in (
+    "Requires=telos-reth-archive@%i.service",
+    "User=telos-reth-archive-consensus",
+    "ExecStart=/usr/local/libexec/telos-reth-archive-consensus-run %i %d/archive-jwt.hex",
+    "IPAddressAllow=localhost",
+    "IPAddressDeny=any",
+    "ReadWritePaths=/var/lib/telos-reth-archive-consensus/%i",
+):
+    assert directive in archive_companion_unit, (
+        f"missing archive companion unit invariant: {directive}"
+    )
+archive_run = read("ops/scripts/telos-reth-archive-run")
+archive_companion_run = read("ops/scripts/telos-reth-archive-consensus-run")
+assert "ARCHIVE_BINARY_SHA256" in archive_run
+assert "--disable-discovery" in archive_run
+assert "--max-outbound-peers 0" in archive_run
+assert "ARCHIVE_CONSENSUS_BINARY_SHA256" in archive_companion_run
+assert "jwt_secret_path" in archive_companion_run
 
 package = read("scripts/release/package-telos.sh")
 verify = read("scripts/release/verify-assets.sh")
@@ -214,13 +282,12 @@ assert "/usr/local/lib/telos-rpc-router/releases" in router_preflight
 history_doc = read("docs/telos/history-routing.md")
 for statement in (
     "not a full archive",
-    "still-live incumbent",
+    "independent archive",
     "exact qualified Telos public policy",
     "replay-unsafe methods fail",
     "filter lifecycle",
     "`eth_feeHistory`",
     "do not stop, replace, or delete the incumbent",
-    "post-Savanna instant-finality",
     "host firewall rules",
 ):
     assert statement in history_doc, f"missing history-boundary statement: {statement}"

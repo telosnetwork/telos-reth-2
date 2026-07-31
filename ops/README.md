@@ -10,6 +10,8 @@ because it must stop two units and preserve database ownership.
 | `systemd/telos-reth@.service` | Locked-down execution service; secrets are systemd credentials |
 | `systemd/telos-rpc-router@.service` | Loopback-only sparse/live plus retained-history router |
 | `systemd/telos-consensus-client@.service` | Exact hardened companion service contract |
+| `systemd/telos-reth-archive@.service` | Independent retained-history backend contract |
+| `systemd/telos-reth-archive-consensus@.service` | Independent retained-history feed contract |
 | `systemd/telos-reth-readiness@.*` | JWT-authenticated, canonical-parity readiness every 30 seconds |
 | `systemd/telos-rpc-router-readiness@.*` | Router backend-identity readiness every 30 seconds |
 | `systemd/telos-reth-snapshot@.*` | Coordinated reflink snapshot, remote restic copy, and bounded data check |
@@ -36,14 +38,14 @@ The complete install, upgrade, rollback, recovery, and incident procedures are i
 handoff or journal-driven auto-restart daemon. State reconciliation belongs to the same
 JWT-authenticated Engine request, and canonical mismatches require quarantine and investigation.
 
-The sparse mainnet database is deployed beside the still-live incumbent, never as a replacement
-archive. `mainnet-router.env.example` binds the exact checkpoint and pre-Savanna
+The sparse mainnet database, independently copied retained-history backend, and incumbent are
+deployed side by side. `mainnet-router.env.example` binds exact historical
 block/state/receipt/log witnesses, and the router keeps filter lifecycle plus `eth_feeHistory` on
-the incumbent. These old-block witnesses qualify execution and history compatibility, not legacy
-finality timing. Only the router's loopback HTTP listener may sit behind the external TLS proxy,
-whose public policy remains `eth,net,web3`. See
-[`docs/telos/history-routing.md`](../docs/telos/history-routing.md) for the boundary, mandatory
-incumbent unit binding, shadow rollout, and failure semantics.
+the independent archive. Only the router's loopback HTTP listener may sit behind the external TLS
+proxy, whose public policy remains `eth,net,web3`. See
+[`docs/telos/history-routing.md`](../docs/telos/history-routing.md) for the boundary, archive unit
+binding, shadow rollout, and failure semantics. Nothing in these assets authorizes stopping or
+replacing the incumbent.
 
 Validate these assets on the target Linux distribution before installation:
 

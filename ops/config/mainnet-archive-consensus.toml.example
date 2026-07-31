@@ -1,0 +1,33 @@
+# Install as /etc/telos-reth/mainnet/archive-consensus.toml, owned by
+# root:telos-reth-config and mode 0440. Keep the exact reviewed network values from the live
+# companion configuration; only the Engine credential, Engine port, and data path differ.
+log_level = "info"
+chain_id = 40
+execution_endpoint = "http://127.0.0.1:28551"
+jwt_secret_path = "/run/credentials/telos-reth-archive-consensus@mainnet.service/archive-jwt.hex"
+
+execution_anchor_block_number = 479294328
+execution_anchor_block_hash = "0x7d62876c8248867708f934b13184ff03440c2b4447a0434562c10bbc783bef51"
+native_chain_id = "4667b205c6838ef70ff7988f6e8257e8be0e1284a2f59699054a018f743b1d11"
+execution_anchor_native_block_number = 479294364
+execution_anchor_native_block_hash = "1c91739cc32c21f3c44a063b29e17934d1c060d329699616960d181a9e9919bc"
+
+native_request_timeout_ms = 10000
+execution_connect_timeout_ms = 5000
+execution_request_timeout_ms = 30000
+execution_max_response_bytes = 16777216
+ship_endpoint = "ws://127.0.0.1:19000"
+chain_endpoint = "http://127.0.0.1:8889"
+
+batch_size = 50
+prev_hash = "0x7d62876c8248867708f934b13184ff03440c2b4447a0434562c10bbc783bef51"
+execution_context_anchor_block = 479294329
+execution_context_starting_gas_price = "0x4c6f9119055"
+execution_context_starting_revision = 1
+evm_start_block = 479294329
+validate_hash = "0x927d07d193136f20ecfa3869f56d5ef8e692a7947c2c3843498851efea1e730a"
+
+data_path = "/var/lib/telos-reth-archive-consensus/mainnet"
+block_checkpoint_interval = 1000
+maximum_sync_range = 100000
+latest_blocks_in_db_num = 2048
