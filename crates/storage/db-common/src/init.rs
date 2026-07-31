@@ -4,7 +4,7 @@ use alloy_consensus::BlockHeader;
 use alloy_genesis::GenesisAccount;
 use alloy_primitives::{
     keccak256,
-    map::{AddressMap, B256Map, B256Set, HashMap},
+    map::{AddressMap, B256Map, HashMap},
     Address, B256, U256,
 };
 use reth_chainspec::EthChainSpec;
@@ -625,6 +625,12 @@ enum StateDumpRootPolicy {
     EmptyHeader { expected_state_root: B256 },
 }
 
+impl StateDumpRootPolicy {
+    const fn allows_bytecode_hash_overrides(self) -> bool {
+        matches!(self, Self::EmptyHeader { .. })
+    }
+}
+
 fn verified_state_root(
     header_hash: B256,
     header_state_root: B256,
@@ -711,7 +717,11 @@ where
     }
 
     // remaining lines are accounts
-    let collector = parse_accounts(reader, etl_config)?;
+    let collector = parse_accounts_with_policy(
+        reader,
+        etl_config,
+        root_policy.allows_bytecode_hash_overrides(),
+    )?;
 
     // write state to db with chunked commits to avoid OOM
     dump_state(collector, provider_factory, block)?;
@@ -773,17 +783,31 @@ fn parse_state_root(reader: &mut impl BufRead) -> eyre::Result<B256> {
 }
 
 /// Parses accounts and pushes them to a [`Collector`].
-fn parse_accounts(
+fn parse_accounts_with_policy(
     reader: impl BufRead,
     etl_config: EtlConfig,
-) -> Result<Collector<Address, GenesisAccount>, eyre::Error> {
+    allow_bytecode_hash_overrides: bool,
+) -> Result<ParsedStateDump, eyre::Error> {
     let mut collector = Collector::new(etl_config.file_size, etl_config.dir);
+    let mut bytecode_hash_overrides = AddressMap::default();
     let mut parsed_accounts = 0usize;
 
     let stream =
         serde_json::Deserializer::from_reader(reader).into_iter::<GenesisAccountWithAddress>();
     for account in stream {
-        let GenesisAccountWithAddress { genesis_account, address } = account?;
+        let GenesisAccountWithAddress { genesis_account, address, bytecode_hash } = account?;
+        if bytecode_hash.is_some() && !allow_bytecode_hash_overrides {
+            return Err(eyre::eyre!(
+                "explicit bytecode hashes are only accepted by the verified Telos placeholder-root import"
+            ))
+        }
+        if let Some(bytecode_hash) = bytecode_hash &&
+            bytecode_hash_overrides.insert(address, bytecode_hash).is_some()
+        {
+            return Err(eyre::eyre!(
+                "state dump repeats bytecode-hash override for account {address}"
+            ))
+        }
         collector.insert(address, genesis_account)?;
 
         parsed_accounts += 1;
@@ -792,7 +816,7 @@ fn parse_accounts(
         }
     }
 
-    Ok(collector)
+    Ok(ParsedStateDump { collector, bytecode_hash_overrides })
 }
 
 /// Takes a [`Collector`] and writes all accounts directly to database tables.
@@ -810,7 +834,7 @@ fn parse_accounts(
 /// NOTE: This function is not idempotent. If the process crashes mid-import, the database
 /// must be wiped before retrying.
 fn dump_state<PF>(
-    mut collector: Collector<Address, GenesisAccount>,
+    state_dump: ParsedStateDump,
     provider_factory: &PF,
     block: u64,
 ) -> Result<(), eyre::Error>
@@ -823,8 +847,9 @@ where
 {
     let storage_settings = provider_factory.database_provider_rw()?.cached_storage_settings();
     if storage_settings.storage_v2 {
-        return dump_state_v2(collector, provider_factory, block)
+        return dump_state_v2(state_dump, provider_factory, block)
     }
+    let ParsedStateDump { mut collector, bytecode_hash_overrides } = state_dump;
 
     let accounts_len = collector.len();
     let mut total_accounts: usize = 0;
@@ -833,8 +858,9 @@ where
     // pre-allocate the history list once — every entry uses the same single-block bitmap
     let history_list = IntegerList::new([block])?;
 
-    // track seen bytecode hashes to avoid re-hashing and re-writing duplicates
-    let mut seen_bytecodes: B256Set = B256Set::default();
+    // Keep this across chunk commits so an explicit legacy key can never be remapped to different
+    // bytes by a later account.
+    let mut seen_bytecodes: B256Map<B256> = B256Map::default();
 
     let mut provider_rw = provider_factory.database_provider_rw()?;
 
@@ -857,13 +883,13 @@ where
                 "Committed chunk"
             );
             storage_units = 0;
-            seen_bytecodes = B256Set::default();
         }
 
         write_account_to_db(
             provider_rw.tx_ref(),
             &address,
             &account,
+            bytecode_hash_overrides.get(&address).copied(),
             block,
             &history_list,
             &mut seen_bytecodes,
@@ -886,7 +912,7 @@ where
 }
 
 fn dump_state_v2<PF>(
-    mut collector: Collector<Address, GenesisAccount>,
+    state_dump: ParsedStateDump,
     provider_factory: &PF,
     block: u64,
 ) -> Result<(), eyre::Error>
@@ -899,6 +925,7 @@ where
                         + NodePrimitivesProvider,
     >,
 {
+    let ParsedStateDump { mut collector, bytecode_hash_overrides } = state_dump;
     let accounts_len = collector.len();
     let mut total_accounts: usize = 0;
     let mut storage_units: usize = 0;
@@ -906,8 +933,9 @@ where
     // pre-allocate the history list once — every entry uses the same single-block bitmap
     let history_list = IntegerList::new([block])?;
 
-    // track seen bytecode hashes to avoid re-hashing and re-writing duplicates
-    let mut seen_bytecodes: B256Set = B256Set::default();
+    // Keep this across chunk commits so an explicit legacy key can never be remapped to different
+    // bytes by a later account.
+    let mut seen_bytecodes: B256Map<B256> = B256Map::default();
 
     let mut provider_rw = provider_factory.database_provider_rw()?;
     let static_file_provider = provider_rw.static_file_provider();
@@ -947,7 +975,6 @@ where
                     "Committed chunk"
                 );
                 storage_units = 0;
-                seen_bytecodes = B256Set::default();
             }
 
             write_account_to_db_v2(
@@ -956,8 +983,8 @@ where
                 &mut history_batch,
                 &address,
                 &account,
+                (bytecode_hash_overrides.get(&address).copied(), &mut seen_bytecodes),
                 &history_list,
-                &mut seen_bytecodes,
             )?;
 
             total_accounts += 1;
@@ -1190,21 +1217,18 @@ fn write_account_to_db<TX: DbTxMut>(
     tx: &TX,
     address: &Address,
     genesis_account: &GenesisAccount,
+    bytecode_hash_override: Option<B256>,
     block: u64,
     history_list: &IntegerList,
-    seen_bytecodes: &mut B256Set,
+    seen_bytecodes: &mut B256Map<B256>,
 ) -> Result<(), eyre::Error> {
-    let bytecode_hash = if let Some(code) = &genesis_account.code {
-        let bytecode = Bytecode::new_raw_checked(code.clone())
-            .map_err(|e| eyre::eyre!("Invalid bytecode for {address}: {e}"))?;
-        let hash = bytecode.hash_slow();
-        if seen_bytecodes.insert(hash) {
-            tx.put::<tables::Bytecodes>(hash, bytecode)?;
-        }
-        Some(hash)
-    } else {
-        None
-    };
+    let bytecode_hash = write_state_dump_bytecode(
+        tx,
+        address,
+        genesis_account,
+        bytecode_hash_override,
+        seen_bytecodes,
+    )?;
 
     let account = Account {
         nonce: genesis_account.nonce.unwrap_or_default(),
@@ -1275,24 +1299,21 @@ fn write_account_to_db_v2<TX, N>(
     history_batch: &mut reth_provider::providers::RocksDBBatch<'_>,
     address: &Address,
     genesis_account: &GenesisAccount,
+    bytecode_state: (Option<B256>, &mut B256Map<B256>),
     history_list: &IntegerList,
-    seen_bytecodes: &mut B256Set,
 ) -> Result<(), eyre::Error>
 where
     TX: DbTxMut,
     N: NodePrimitives,
 {
-    let bytecode_hash = if let Some(code) = &genesis_account.code {
-        let bytecode = Bytecode::new_raw_checked(code.clone())
-            .map_err(|e| eyre::eyre!("Invalid bytecode for {address}: {e}"))?;
-        let hash = bytecode.hash_slow();
-        if seen_bytecodes.insert(hash) {
-            tx.put::<tables::Bytecodes>(hash, bytecode)?;
-        }
-        Some(hash)
-    } else {
-        None
-    };
+    let (bytecode_hash_override, seen_bytecodes) = bytecode_state;
+    let bytecode_hash = write_state_dump_bytecode(
+        tx,
+        address,
+        genesis_account,
+        bytecode_hash_override,
+        seen_bytecodes,
+    )?;
 
     let account = Account {
         nonce: genesis_account.nonce.unwrap_or_default(),
@@ -1331,6 +1352,36 @@ where
     }
 
     Ok(())
+}
+
+fn write_state_dump_bytecode<TX: DbTxMut>(
+    tx: &TX,
+    address: &Address,
+    genesis_account: &GenesisAccount,
+    bytecode_hash_override: Option<B256>,
+    seen_bytecodes: &mut B256Map<B256>,
+) -> Result<Option<B256>, eyre::Error> {
+    let Some(code) = &genesis_account.code else {
+        if bytecode_hash_override.is_some() {
+            eyre::bail!("account {address} declares a bytecode hash without bytecode")
+        }
+        return Ok(None)
+    };
+
+    let bytecode = Bytecode::new_raw_checked(code.clone())
+        .map_err(|error| eyre::eyre!("Invalid bytecode for {address}: {error}"))?;
+    let actual_hash = bytecode.hash_slow();
+    let hash = bytecode_hash_override.unwrap_or(actual_hash);
+    if let Some(previous_actual_hash) = seen_bytecodes.insert(hash, actual_hash) {
+        if previous_actual_hash != actual_hash {
+            eyre::bail!(
+                "account {address} maps bytecode hash {hash} to bytes that conflict with another account"
+            )
+        }
+    } else {
+        tx.put::<tables::Bytecodes>(hash, bytecode)?;
+    }
+    Ok(Some(hash))
 }
 
 /// Computes the state root (from scratch) based on the accounts and storages present in the
@@ -1498,6 +1549,14 @@ struct GenesisAccountWithAddress {
     genesis_account: GenesisAccount,
     /// The account's address.
     address: Address,
+    /// Exact legacy bytecode-table key when it differs from `keccak256(code)`.
+    #[serde(default, rename = "codeHash", skip_serializing_if = "Option::is_none")]
+    bytecode_hash: Option<B256>,
+}
+
+struct ParsedStateDump {
+    collector: Collector<Address, GenesisAccount>,
+    bytecode_hash_overrides: AddressMap<B256>,
 }
 
 #[cfg(test)]
@@ -1540,8 +1599,10 @@ mod tests {
 {"address":"0x0000000000000000000000000000000000000001","balance":"0x1"}
 "#;
 
-        let mut collector =
-            parse_accounts(&input[..], EtlConfig::new(None, 128)).expect("parse succeeds");
+        let ParsedStateDump { mut collector, bytecode_hash_overrides } =
+            parse_accounts_with_policy(&input[..], EtlConfig::new(None, 128), false)
+                .expect("parse succeeds");
+        assert!(bytecode_hash_overrides.is_empty());
 
         let accounts = collector
             .iter()
@@ -1562,6 +1623,34 @@ mod tests {
                 (Address::with_last_byte(2), U256::from(2))
             ]
         );
+    }
+
+    #[test]
+    fn bytecode_hash_overrides_are_limited_to_placeholder_imports() {
+        let address = Address::with_last_byte(1);
+        let bytecode_hash = B256::repeat_byte(0x44);
+        let input = format!(
+            "{{\"address\":\"{address}\",\"balance\":\"0x0\",\"code\":\"0x6000\",\"codeHash\":\"{bytecode_hash}\"}}\n"
+        );
+
+        let error = parse_accounts_with_policy(input.as_bytes(), EtlConfig::new(None, 128), false)
+            .err()
+            .expect("standard import rejects an explicit bytecode hash");
+        assert!(error.to_string().contains("verified Telos placeholder-root import"));
+
+        let collector =
+            parse_accounts_with_policy(input.as_bytes(), EtlConfig::new(None, 128), true).unwrap();
+        let factory = create_test_provider_factory_with_chain_spec(MAINNET.clone());
+        factory.set_storage_settings_cache(StorageSettings::v2());
+        dump_state(collector, &factory, 10).unwrap();
+
+        let provider = factory.provider().unwrap();
+        let tx = provider.tx_ref();
+        let account = tx.get::<tables::HashedAccounts>(keccak256(address)).unwrap().unwrap();
+        assert_eq!(account.bytecode_hash, Some(bytecode_hash));
+        let bytecode = tx.get::<tables::Bytecodes>(bytecode_hash).unwrap().unwrap();
+        assert_eq!(bytecode.original_bytes().as_ref(), &[0x60, 0x00]);
+        assert_ne!(bytecode.hash_slow(), bytecode_hash);
     }
 
     #[test]
@@ -1600,7 +1689,8 @@ mod tests {
 {"address":"0x0000000000000000000000000000000000000002","balance":"0x0","storage":{"0x0000000000000000000000000000000000000000000000000000000000000003":"0x0000000000000000000000000000000000000000000000000000000000000004"}}
 "#;
 
-        let collector = parse_accounts(&input[..], EtlConfig::new(None, 128)).unwrap();
+        let collector =
+            parse_accounts_with_policy(&input[..], EtlConfig::new(None, 128), false).unwrap();
         let factory = create_test_provider_factory_with_chain_spec(MAINNET.clone());
         factory.set_storage_settings_cache(StorageSettings::v2());
         let block = 10;
@@ -1673,7 +1763,8 @@ mod tests {
         let input = br#"{"address":"0x0000000000000000000000000000000000000002","balance":"0x0","storage":{"0x0000000000000000000000000000000000000000000000000000000000000003":"0x0000000000000000000000000000000000000000000000000000000000000004"}}
 "#;
 
-        let collector = parse_accounts(&input[..], EtlConfig::new(None, 128)).unwrap();
+        let collector =
+            parse_accounts_with_policy(&input[..], EtlConfig::new(None, 128), false).unwrap();
         let factory = create_test_provider_factory_with_chain_spec(MAINNET.clone());
         factory.set_storage_settings_cache(StorageSettings::v2());
         let static_files = factory.static_file_provider();
@@ -1777,8 +1868,12 @@ mod tests {
         let mut input = serde_json::to_vec(&StateRoot { root: expected_state_root }).unwrap();
         input.push(b'\n');
         input.extend(
-            serde_json::to_vec(&GenesisAccountWithAddress { genesis_account: account, address })
-                .unwrap(),
+            serde_json::to_vec(&GenesisAccountWithAddress {
+                genesis_account: account,
+                address,
+                bytecode_hash: None,
+            })
+            .unwrap(),
         );
         input.push(b'\n');
 
