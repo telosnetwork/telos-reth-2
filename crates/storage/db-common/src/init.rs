@@ -1363,7 +1363,7 @@ fn write_state_dump_bytecode<TX: DbTxMut>(
 ) -> Result<Option<B256>, eyre::Error> {
     let Some(code) = &genesis_account.code else {
         if bytecode_hash_override.is_some() {
-            eyre::bail!("account {address} declares a bytecode hash without bytecode")
+            eyre::bail!("account {address} declares a bytecode hash without bytecode");
         }
         return Ok(None)
     };
@@ -1376,7 +1376,7 @@ fn write_state_dump_bytecode<TX: DbTxMut>(
         if previous_actual_hash != actual_hash {
             eyre::bail!(
                 "account {address} maps bytecode hash {hash} to bytes that conflict with another account"
-            )
+            );
         }
     } else {
         tx.put::<tables::Bytecodes>(hash, bytecode)?;
