@@ -131,6 +131,10 @@ convenient recent block. Replace `TELOS_RPC_ROUTER_BINARY_SHA256` with
 `rpc_router_sha256` from the authenticated archive metadata; the unit preflight requires the
 activated versioned binary to match it.
 
+The retained archive uses a digest-pinned legacy execution/companion pair distinct from the live
+v2 pair. Populate its three `ARCHIVE_CONSENSUS_*` anchor values from the immutable database-copy
+manifest as described in [`history-routing.md`](./history-routing.md); placeholders fail closed.
+
 ```bash
 sudo install -d -o root -g telos-reth-config -m 0750 /etc/telos-reth/mainnet
 sudo install -o root -g telos-reth-config -m 0440 ops/config/mainnet.env.example \

@@ -63,7 +63,6 @@ exec "$ARCHIVE_BINARY" node \
     --addr 127.0.0.1 \
     --port "$ARCHIVE_P2P_PORT" \
     --disable-discovery \
-    --disable-dns-discovery \
     --trusted-only \
     --max-inbound-peers 0 \
     --max-outbound-peers 0 \

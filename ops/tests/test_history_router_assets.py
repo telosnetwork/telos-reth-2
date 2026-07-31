@@ -4,6 +4,8 @@
 from pathlib import Path
 from urllib.parse import urlparse
 import re
+import subprocess
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -87,6 +89,9 @@ assert archive_environment.keys() == {
     "ARCHIVE_CONSENSUS_BINARY",
     "ARCHIVE_CONSENSUS_BINARY_SHA256",
     "ARCHIVE_CONSENSUS_CONFIG",
+    "ARCHIVE_CONSENSUS_EVM_START_BLOCK",
+    "ARCHIVE_CONSENSUS_PREV_HASH",
+    "ARCHIVE_CONSENSUS_VALIDATE_HASH",
 }
 assert archive_environment["ARCHIVE_DATADIR"] == "/var/lib/telos-reth-archive/mainnet"
 assert archive_environment["ARCHIVE_CHAIN"] == "tevmmainnet"
@@ -234,6 +239,7 @@ for directive in (
     "Requires=telos-reth-archive@%i.service",
     "User=telos-reth-archive-consensus",
     "ExecStart=/usr/local/libexec/telos-reth-archive-consensus-run %i %d/archive-jwt.hex",
+    "RuntimeDirectory=telos-reth-archive-consensus-%i",
     "IPAddressAllow=localhost",
     "IPAddressDeny=any",
     "ReadWritePaths=/var/lib/telos-reth-archive-consensus/%i",
@@ -247,7 +253,106 @@ assert "ARCHIVE_BINARY_SHA256" in archive_run
 assert "--disable-discovery" in archive_run
 assert "--max-outbound-peers 0" in archive_run
 assert "ARCHIVE_CONSENSUS_BINARY_SHA256" in archive_companion_run
-assert "jwt_secret_path" in archive_companion_run
+assert "SYSTEMD_CREDENTIAL" in archive_companion_run
+assert "COPY_MANIFEST_PREV_HASH" in archive_companion_run
+assert "COPY_MANIFEST_VALIDATE_HASH" in archive_companion_run
+assert "CURRENT" in archive_companion_run
+assert "validate_hash was enforced when this companion state was initialized" in archive_companion_run
+assert 'exec "$ARCHIVE_CONSENSUS_BINARY" --config "$runtime_config"' in archive_companion_run
+assert "same independently qualified artifact used by the live v2 node" not in read(
+    "ops/config/mainnet-archive.env.example"
+)
+
+archive_companion_lines = archive_companion_run.splitlines()
+program_start = next(
+    index + 1 for index, line in enumerate(archive_companion_lines) if "<<'PY'" in line
+)
+program_end = archive_companion_lines.index("PY", program_start)
+archive_companion_config_program = "\n".join(
+    archive_companion_lines[program_start:program_end]
+) + "\n"
+if subprocess.run(
+    ["python3", "-c", "import tomllib"], check=False, capture_output=True
+).returncode != 0:
+    archive_companion_config_program = archive_companion_config_program.replace(
+        "import tomllib\n",
+        """import ast
+class tomllib:
+    @staticmethod
+    def load(source):
+        values = {}
+        for raw_line in source.read().decode().splitlines():
+            line = raw_line.split(\"#\", 1)[0].strip()
+            if line:
+                key, value = line.split(\"=\", 1)
+                values[key.strip()] = ast.literal_eval(value.strip())
+        return values
+""",
+        1,
+    )
+with tempfile.TemporaryDirectory(prefix="telos-archive-companion-") as temporary:
+    temporary_root = Path(temporary).resolve()
+    template = temporary_root / "archive-consensus.toml"
+    runtime = temporary_root / "config.toml"
+    state = temporary_root / "state"
+    jwt = temporary_root / "jwt.hex"
+    state.mkdir()
+    template.write_text(
+        read("ops/config/mainnet-archive-consensus.toml.example").replace(
+            "/var/lib/telos-reth-archive-consensus/mainnet", str(state)
+        )
+    )
+    jwt.write_text("ab" * 32 + "\n")
+    jwt.chmod(0o400)
+    arguments = (
+        str(template),
+        str(runtime),
+        "mainnet",
+        str(jwt),
+        str(state),
+        "40",
+        "28551",
+        "480971980",
+        "0x" + "12" * 32,
+        "0x" + "34" * 32,
+    )
+    generated = subprocess.run(
+        ["python3", "-I", "-B", "-", *arguments],
+        input=archive_companion_config_program,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert generated.returncode == 0, generated.stderr
+    assert runtime.stat().st_mode & 0o777 == 0o400
+    runtime_text = runtime.read_text()
+    assert f'jwt_secret = "{"ab" * 32}"' in runtime_text
+    assert "evm_start_block = 480971980" in runtime_text
+    assert f'prev_hash = "0x{"12" * 32}"' in runtime_text
+    assert f'validate_hash = "0x{"34" * 32}"' in runtime_text
+
+    (state / "CURRENT").write_text("MANIFEST-000001\n")
+    restarted = subprocess.run(
+        ["python3", "-I", "-B", "-", *arguments],
+        input=archive_companion_config_program,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert restarted.returncode == 0, restarted.stderr
+    runtime_text = runtime.read_text()
+    assert 'validate_hash = "0x' not in runtime_text
+    assert "validate_hash was enforced when this companion state was initialized" in runtime_text
+
+    invalid = subprocess.run(
+        ["python3", "-I", "-B", "-", *(*arguments[:7], "placeholder", *arguments[8:])],
+        input=archive_companion_config_program,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert invalid.returncode != 0
+    assert "start block is malformed" in invalid.stderr
 
 package = read("scripts/release/package-telos.sh")
 verify = read("scripts/release/verify-assets.sh")

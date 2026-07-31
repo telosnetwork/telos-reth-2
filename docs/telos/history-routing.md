@@ -120,7 +120,9 @@ sudo /usr/local/libexec/telos-reth-release activate router \
 Keep the incumbent on its existing loopback port. First create a transactional MDBX/static-file
 copy in `/var/lib/telos-reth-archive/mainnet`; do not live-`rsync` the database file and do not copy
 `jwt.hex`, `discovery-secret`, `known-peers.json`, logs, or any signer material. Install a fresh
-archive JWT, the digest-pinned legacy archive binary, and the exact qualified consensus companion.
+archive JWT, the digest-pinned legacy archive binary, and the exact matching qualified legacy
+consensus companion. The live v2 companion is not interchangeable with this retained-history
+pair: it negotiates newer Engine capabilities that the legacy execution binary does not expose.
 The reference services make both archive processes loopback-only and give them separate users and
 state directories:
 
@@ -155,7 +157,15 @@ files are append-only except for the active tail, so the result contains every o
 by the database snapshot. Record the source paths, start/end times, database/static sizes, exact
 copy/check-tool digests, successful check-log digest, and source head before and after the copy in
 an immutable manifest. Start the archive companion with an empty, separate state directory and let
-it replay from the configured anchor; never seed it from state newer than the database snapshot.
+it replay from the copy boundary; never seed it from state newer than the database snapshot. Set
+`ARCHIVE_CONSENSUS_EVM_START_BLOCK` to the copied archive head plus one,
+`ARCHIVE_CONSENSUS_PREV_HASH` to the copied head hash, and
+`ARCHIVE_CONSENSUS_VALIDATE_HASH` to the canonical hash of that next block. The launcher injects
+those immutable copy-manifest values and the private JWT credential into a mode-0400 runtime
+configuration; it fails closed on placeholders, malformed values, unsafe partial state, or a
+companion digest mismatch. The next-block hash is enforced only while initializing empty companion
+state; subsequent starts resume from the companion database and do not incorrectly reapply the
+bootstrap hash to a later block.
 
 ```bash
 sudo install -o root -g telos-reth-config -m 0440 \

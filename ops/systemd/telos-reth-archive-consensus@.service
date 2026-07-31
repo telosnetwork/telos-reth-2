@@ -6,7 +6,6 @@ After=network-online.target telos-reth-archive@%i.service
 Wants=network-online.target
 StartLimitIntervalSec=15min
 StartLimitBurst=3
-ConditionFileIsExecutable=/usr/local/bin/telos-consensus-client
 ConditionPathExists=/etc/telos-reth/%i/archive-consensus.toml
 
 [Service]
@@ -19,6 +18,8 @@ EnvironmentFile=/etc/telos-reth/%i/archive.env
 LoadCredential=archive-jwt.hex:/etc/telos-reth/%i/archive-jwt.hex
 StateDirectory=telos-reth-archive-consensus/%i
 StateDirectoryMode=0700
+RuntimeDirectory=telos-reth-archive-consensus-%i
+RuntimeDirectoryMode=0700
 ExecStart=/usr/local/libexec/telos-reth-archive-consensus-run %i %d/archive-jwt.hex
 
 Restart=on-failure
