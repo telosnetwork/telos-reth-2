@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+die() {
+    echo "telos-reth launcher: $*" >&2
+    exit 1
+}
+
+[[ $# -eq 3 ]] || die "usage: $0 INSTANCE JWT_CREDENTIAL SIGNER_CREDENTIAL"
+instance=$1
+jwt_file=$2
+signer_file=$3
+config=/etc/telos-reth/${instance}/node.env
+
+[[ $instance =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || die "invalid instance name"
+[[ -f $config && ! -L $config && -r $config ]] || die "node.env is unavailable"
+# shellcheck disable=SC1090
+source "$config"
+
+required=(
+    CHAIN EXECUTION_ANCHOR HTTP_PORT HTTP_API WS_ENABLED AUTHRPC_PORT METRICS_PORT
+    RPC_MAX_CONNECTIONS RPC_MAX_REQUEST_SIZE_MB RPC_MAX_RESPONSE_SIZE_MB
+)
+for name in "${required[@]}"; do
+    [[ -n ${!name:-} ]] || die "$name is required"
+done
+[[ -f $jwt_file && -r $jwt_file ]] || die "JWT credential is unavailable"
+[[ -f $signer_file && -r $signer_file ]] || die "signer credential fallback is unavailable"
+
+args=(
+    /usr/local/bin/telos-reth node
+    --chain "$CHAIN"
+    --datadir "/var/lib/telos-reth/${instance}"
+    --storage.v2=true
+    --telos.execution-anchor "$EXECUTION_ANCHOR"
+    --authrpc.addr 127.0.0.1
+    --authrpc.port "$AUTHRPC_PORT"
+    --authrpc.jwtsecret "$jwt_file"
+    --http
+    --http.addr 127.0.0.1
+    --http.port "$HTTP_PORT"
+    --http.api "$HTTP_API"
+    --ipcdisable
+    --rpc.max-connections "$RPC_MAX_CONNECTIONS"
+    --rpc.max-request-size "$RPC_MAX_REQUEST_SIZE_MB"
+    --rpc.max-response-size "$RPC_MAX_RESPONSE_SIZE_MB"
+    --metrics "127.0.0.1:${METRICS_PORT}"
+)
+
+case "$WS_ENABLED" in
+    true)
+        [[ -n ${WS_PORT:-} && -n ${WS_API:-} ]] ||
+            die "WS_PORT and WS_API are required when WebSocket RPC is enabled"
+        args+=(--ws --ws.addr 127.0.0.1 --ws.port "$WS_PORT" --ws.api "$WS_API")
+        ;;
+    false) ;;
+    *) die "WS_ENABLED must be true or false" ;;
+esac
+
+forwarder_fields=0
+signer=$(tr -d '\r\n' < "$signer_file")
+[[ $signer == disabled ]] && signer=
+if [[ -n ${TELOS_SIGNER_ACCOUNT:-} ]]; then
+    ((forwarder_fields += 1))
+fi
+if [[ -n ${TELOS_SIGNER_PERMISSION:-} ]]; then
+    ((forwarder_fields += 1))
+fi
+if [[ -n $signer ]]; then
+    ((forwarder_fields += 1))
+fi
+case "$forwarder_fields" in
+    0) ;;
+    3)
+        [[ -n ${TELOS_ENDPOINT:-} ]] || die "TELOS_ENDPOINT is required for transaction forwarding"
+        args+=(
+            --telos.endpoint "$TELOS_ENDPOINT"
+            --telos.signer-account "$TELOS_SIGNER_ACCOUNT"
+            --telos.signer-permission "$TELOS_SIGNER_PERMISSION"
+            --telos.signer-key-file "$signer_file"
+        )
+        ;;
+    *) die "transaction forwarding requires signer account, permission, and credential together" ;;
+esac
+unset signer
+
+exec "${args[@]}"

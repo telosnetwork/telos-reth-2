@@ -1,0 +1,223 @@
+{
+  "schema": "telos-reth/golden-evidence-provenance/v1",
+  "retrieval_window": {
+    "started_at": "2026-07-21T18:23:00Z",
+    "completed_at": "2026-07-21T18:27:55Z"
+  },
+  "data_classification": "public-and-operator-authenticated-no-secret",
+  "networks": [
+    {
+      "name": "mainnet",
+      "evm_chain_id": 40,
+      "native_chain_id": "4667b205c6838ef70ff7988f6e8257e8be0e1284a2f59699054a018f743b1d11"
+    },
+    {
+      "name": "testnet",
+      "evm_chain_id": 41,
+      "native_chain_id": "1eaa0824707c8c16bd25145493bf062aecddfeb56c736f6ba6397f3195f33c9f"
+    }
+  ],
+  "endpoints": [
+    {
+      "id": "mainnet-hyperion-primary",
+      "base_url": "https://mainnet.telos.net",
+      "operator_role": "public Hyperion and nodeos gateway",
+      "used_for": [
+        "mainnet historical action",
+        "mainnet historical table deltas",
+        "historical raw transaction action",
+        "current account-index resolution"
+      ]
+    },
+    {
+      "id": "mainnet-hyperion-secondary",
+      "base_url": "https://telos.eosusa.io",
+      "operator_role": "public Hyperion gateway",
+      "used_for": [
+        "mainnet historical action cross-check",
+        "mainnet historical table-delta cross-check",
+        "historical block ID completion"
+      ]
+    },
+    {
+      "id": "testnet-hyperion-primary",
+      "base_url": "https://testnet.telos.net",
+      "operator_role": "public Hyperion and nodeos gateway",
+      "used_for": [
+        "testnet historical action cross-check"
+      ]
+    },
+    {
+      "id": "testnet-hyperion-secondary",
+      "base_url": "https://test.telos.eosusa.io",
+      "operator_role": "public Hyperion gateway",
+      "used_for": [
+        "testnet historical actions",
+        "testnet historical table deltas",
+        "historical block ID completion"
+      ]
+    },
+    {
+      "id": "mainnet-evm-rpc",
+      "base_url": "https://rpc.telos.net/evm",
+      "operator_role": "public Ethereum JSON-RPC gateway",
+      "used_for": [
+        "eth_chainId",
+        "eth_getBlockByNumber",
+        "eth_getTransactionReceipt",
+        "debug_getRawTransaction",
+        "web3_sha3"
+      ]
+    },
+    {
+      "id": "testnet-evm-rpc",
+      "base_url": "https://rpc.testnet.telos.net/evm",
+      "operator_role": "public Ethereum JSON-RPC gateway",
+      "used_for": [
+        "eth_chainId",
+        "eth_getBlockByNumber"
+      ]
+    },
+    {
+      "id": "mainnet-operator-ship-archive",
+      "base_url": "operator-controlled rpc11 archive via host-key-verified SSH alias",
+      "operator_role": "read-only signed-block, trace-history, and chain-state-history archive",
+      "used_for": [
+        "authenticated two-transaction trace ordering",
+        "boundary equal to transaction_count",
+        "legacy translator decoding",
+        "signed-block and state-delta byte provenance"
+      ]
+    }
+  ],
+  "selection_and_normalization": {
+    "selection": "Only fields used for block mapping, execution context, state reconciliation, transaction decoding, or receipt comparison are retained.",
+    "omitted_volatile_fields": [
+      "query_time_ms",
+      "cached",
+      "cache_expires_in",
+      "lib",
+      "cached_lib",
+      "last_indexed_block",
+      "last_indexed_block_time"
+    ],
+    "hex_policy": "Native table values preserve source case; Ethereum JSON-RPC values preserve the lower-case 0x form returned by the endpoint.",
+    "hash_canonicalization": "Recursively sort object keys, encode compact JSON, remove the final LF, then SHA-256 hash the remaining bytes. Equivalent command: jq -S -c '<pointer>' FILE | tr -d '\\n' | shasum -a 256."
+  },
+  "code_provenance": [
+    {
+      "repository": "https://github.com/telosnetwork/telos-consensus-client",
+      "commit": "9fadee1fd565e3a7ad51c1142e2673df52bd9028",
+      "references": [
+        {
+          "path": "translator/src/types/translator_types.rs",
+          "semantic_fact": "ChainId::block_delta returns 36 for chain 40 and 57 for chain 41."
+        },
+        {
+          "path": "translator/src/block.rs",
+          "semantic_fact": "EVM block number is native block number minus block_delta."
+        },
+        {
+          "path": "translator/src/block.rs",
+          "semantic_fact": "init, doresources, and setrevision record transactions.len() as the boundary before the action."
+        },
+        {
+          "path": "translator/src/block.rs",
+          "semantic_fact": "Chain 41 native block 276210867 synthetically resets revision to zero."
+        }
+      ]
+    },
+    {
+      "repository": "https://github.com/telosnetwork/telos-reth",
+      "commit": "8c37741ea8d97eba713a8028e3f09132bb51abd6",
+      "references": [
+        {
+          "path": "crates/telos/primitives-traits/src/lib.rs",
+          "semantic_fact": "A boundary at zero replaces block-start context; tx_env_at applies nonzero changes when change.height <= lookup height."
+        },
+        {
+          "path": "crates/ethereum/evm/src/execute.rs",
+          "semantic_fact": "The legacy execution loop increments tx_index before tx_env_at, making nonzero translator boundaries one transaction early."
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    {
+      "id": "authenticated-ship-capture-scope",
+      "proof_status": "partially-proven",
+      "affects": [
+        "console receipt decoding",
+        "fork and reorg replay"
+      ],
+      "reason": "The corpus now retains and decodes exact operator archive bytes for one signed block, its traces, and chain-state deltas, proving trace ordering and the terminal boundary. That block does not exercise a fork, reorg, or raw console receipt parser.",
+      "required_evidence": "Add authenticated fork/reorg sequences and a raw action trace retaining the exact console receipt string."
+    },
+    {
+      "id": "intra-block-context-boundary-coverage",
+      "proof_status": "partially-proven",
+      "affects": [
+        "multiple context changes in one block",
+        "nonterminal change followed by another transaction"
+      ],
+      "reason": "Authenticated native block 423015053 has two translated transactions followed by doresources at boundary 2. It proves boundary greater than zero, terminal child inheritance, and directly catches the legacy pre-increment bug because transaction index 1 must retain the old gas price.",
+      "required_evidence": "Add a deterministic block with a nonterminal change followed by another translated transaction and a block containing multiple gas-price or revision changes."
+    },
+    {
+      "id": "public-api-console-omission",
+      "proof_status": "unproven",
+      "affects": [
+        "PrintedReceipt parser",
+        "receipt reconstruction from native console output"
+      ],
+      "reason": "The selected public Hyperion transaction projection does not retain the raw console receipt bytes required by the translator's raw-action path.",
+      "required_evidence": "Authenticated SHIP action trace with the exact console string and an expected decoded receipt."
+    },
+    {
+      "id": "empty-public-state-root",
+      "proof_status": "not-comparable",
+      "affects": [
+        "post-state root",
+        "trie replay equality"
+      ],
+      "reason": "The established public Telos EVM RPC reports the empty trie root as stateRoot, so native table deltas can be compared exactly but cannot be anchored to a meaningful public EVM state root.",
+      "required_evidence": "Replay against an independently constructed state database and compare all account/storage rows or a separately committed state checksum."
+    },
+    {
+      "id": "current-only-account-index-resolution",
+      "proof_status": "partially-proven",
+      "affects": [
+        "historical accountstate scope to EVM address mapping"
+      ],
+      "reason": "The accountstate delta is historical, but the public filtered account-index lookup used to resolve index 39456 is current state.",
+      "required_evidence": "Resolve the account row from the same authenticated SHIP replay or a historical table-state proof."
+    },
+    {
+      "id": "pruned-nodeos-block-api",
+      "proof_status": "endpoint-limitation",
+      "affects": [
+        "direct historical get_block cross-check"
+      ],
+      "reason": "Public mainnet and testnet nodeos get_block gateways returned Unknown Block for several retained Hyperion heights.",
+      "required_evidence": "Use an archive node or the signed block bytes from SHIP."
+    },
+    {
+      "id": "testnet-primary-no-deltas-route",
+      "proof_status": "endpoint-limitation",
+      "affects": [
+        "single-operator testnet delta verification"
+      ],
+      "reason": "testnet.telos.net returned Unknown Endpoint for get_deltas; test.telos.eosusa.io supplied the committed testnet delta evidence.",
+      "required_evidence": "Cross-check against an additional testnet SHIP or full-delta Hyperion operator."
+    },
+    {
+      "id": "public-endpoint-reindexability",
+      "proof_status": "operational-risk",
+      "affects": [
+        "future query reproducibility"
+      ],
+      "reason": "Public operator endpoints can prune, reindex, normalize, or disappear.",
+      "required_evidence": "Retain these canonical fragments and raw SHIP capture artifacts in release provenance."
+    }
+  ]
+}

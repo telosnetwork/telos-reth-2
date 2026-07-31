@@ -1,7 +1,7 @@
 //! Helpers for testing.
 
 use crate::{ConfigureEvm, EvmEnvFor};
-use reth_primitives_traits::{BlockTy, HeaderTy, SealedBlock, SealedHeader};
+use reth_primitives_traits::{BlockTy, HeaderTy, Recovered, SealedBlock, SealedHeader, TxTy};
 
 /// A no-op EVM config that panics on any call. Used as a typesystem hack to satisfy
 /// [`ConfigureEvm`] bounds.
@@ -68,6 +68,13 @@ where
         attributes: Self::NextBlockEnvCtx,
     ) -> Result<crate::ExecutionCtxFor<'_, Self>, Self::Error> {
         self.inner().context_for_next_block(parent, attributes)
+    }
+
+    fn recover_block_transaction(
+        &self,
+        transaction: TxTy<Self::Primitives>,
+    ) -> Result<Recovered<TxTy<Self::Primitives>>, crate::block::BlockExecutionError> {
+        self.inner().recover_block_transaction(transaction)
     }
 }
 

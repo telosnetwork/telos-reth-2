@@ -10,6 +10,12 @@ slow-timeout = { period = "1m", terminate-after = 10 }
 filter = "test(eest_fixtures)"
 slow-timeout = { period = "2m", terminate-after = 10 }
 
+# Paradigm runs state tests on an 8-core runner. Keep the same test enabled on
+# standard GitHub runners while retaining a hard upper bound.
+[[profile.default.overrides]]
+filter = "package(ef-tests) and test(valid_blocks)"
+slow-timeout = { period = "1m", terminate-after = 5 }
+
 # E2E tests using the testsuite framework from crates/e2e-test-utils
 # These tests are located in tests/e2e-testsuite/ directories across various crates
 [[profile.default.overrides]]

@@ -52,6 +52,8 @@ pub struct EthBeaconConsensus<ChainSpec> {
     skip_requests_hash_check: bool,
     /// When true, allows BAL hashes before Amsterdam activation.
     allow_bal_hashes: bool,
+    /// When true, permits a child header to have the same timestamp as its parent.
+    allow_equal_timestamps: bool,
 }
 
 impl<ChainSpec: EthChainSpec + EthereumHardforks> EthBeaconConsensus<ChainSpec> {
@@ -64,6 +66,7 @@ impl<ChainSpec: EthChainSpec + EthereumHardforks> EthBeaconConsensus<ChainSpec> 
             skip_blob_gas_used_check: false,
             skip_requests_hash_check: false,
             allow_bal_hashes: false,
+            allow_equal_timestamps: false,
         }
     }
 
@@ -102,9 +105,26 @@ impl<ChainSpec: EthChainSpec + EthereumHardforks> EthBeaconConsensus<ChainSpec> 
         self
     }
 
+    /// Allows child headers to have the same timestamp as their parent.
+    pub const fn with_allow_equal_timestamps(mut self, allow: bool) -> Self {
+        self.allow_equal_timestamps = allow;
+        self
+    }
+
     /// Returns the chain spec associated with this consensus engine.
     pub const fn chain_spec(&self) -> &Arc<ChainSpec> {
         &self.chain_spec
+    }
+
+    fn validate_timestamp_against_parent<H: BlockHeader>(
+        &self,
+        header: &H,
+        parent: &H,
+    ) -> Result<(), ConsensusError> {
+        if self.allow_equal_timestamps && header.timestamp() == parent.timestamp() {
+            return Ok(())
+        }
+        validate_against_parent_timestamp(header, parent)
     }
 }
 
@@ -271,7 +291,7 @@ where
     ) -> Result<(), ConsensusError> {
         validate_against_parent_hash_number(header.header(), parent)?;
 
-        validate_against_parent_timestamp(header.header(), parent.header())?;
+        self.validate_timestamp_against_parent(header.header(), parent.header())?;
 
         if !self.skip_gas_limit_ramp_check {
             validate_against_parent_gas_limit(header, parent, &self.chain_spec)?;
@@ -392,6 +412,46 @@ mod tests {
             validate_against_parent_gas_limit(&child, &parent, &ChainSpec::<Header>::default()).unwrap_err(),
             ConsensusError::GasLimitInvalidDecrease { parent_gas_limit, child_gas_limit }
                 if parent_gas_limit == parent.gas_limit && child_gas_limit == child.gas_limit
+        ));
+    }
+
+    #[test]
+    fn equal_parent_timestamp_requires_explicit_opt_in() {
+        let chain_spec = Arc::new(ChainSpec::<Header>::default());
+        let parent = SealedHeader::seal_slow(Header {
+            number: 1,
+            timestamp: 10,
+            gas_limit: MINIMUM_GAS_LIMIT,
+            ..Default::default()
+        });
+        let child = |timestamp, gas_limit| {
+            SealedHeader::seal_slow(Header {
+                parent_hash: parent.hash(),
+                number: 2,
+                timestamp,
+                gas_limit,
+                ..Default::default()
+            })
+        };
+        let equal = child(10, MINIMUM_GAS_LIMIT);
+        let earlier = child(9, MINIMUM_GAS_LIMIT);
+
+        let strict = EthBeaconConsensus::new(Arc::clone(&chain_spec));
+        assert!(matches!(
+            strict.validate_header_against_parent(&equal, &parent),
+            Err(ConsensusError::TimestampIsInPast { timestamp: 10, parent_timestamp: 10 })
+        ));
+
+        let nondecreasing = EthBeaconConsensus::new(chain_spec).with_allow_equal_timestamps(true);
+        assert!(nondecreasing.validate_header_against_parent(&equal, &parent).is_ok());
+        assert!(matches!(
+            nondecreasing.validate_header_against_parent(&earlier, &parent),
+            Err(ConsensusError::TimestampIsInPast { timestamp: 9, parent_timestamp: 10 })
+        ));
+        assert!(matches!(
+            nondecreasing
+                .validate_header_against_parent(&child(10, MINIMUM_GAS_LIMIT - 1), &parent,),
+            Err(ConsensusError::GasLimitInvalidMinimum { .. })
         ));
     }
 

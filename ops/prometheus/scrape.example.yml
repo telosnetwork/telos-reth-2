@@ -1,0 +1,19 @@
+scrape_configs:
+  # Run Prometheus on the node or replace loopback with a private, authenticated metrics proxy.
+  - job_name: telos-reth
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["127.0.0.1:19001"]
+        labels:
+          network: mainnet
+
+  - job_name: node
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["127.0.0.1:9100"]
+
+# node_exporter must also be started with:
+#   --collector.systemd
+#   --collector.textfile.directory=/var/lib/telos-reth-health/metrics
+rule_files:
+  - /etc/prometheus/rules/telos-reth-alerts.yml

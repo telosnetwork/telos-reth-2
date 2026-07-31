@@ -2030,10 +2030,10 @@ impl TransportRpcModules {
         other: impl Into<Methods>,
     ) -> Result<bool, RegisterMethodError> {
         let other = other.into();
-        self.replace_http(other.clone())?;
-        self.replace_ws(other.clone())?;
-        self.replace_ipc(other)?;
-        Ok(true)
+        let http = self.replace_http(other.clone())?;
+        let ws = self.replace_ws(other.clone())?;
+        let ipc = self.replace_ipc(other)?;
+        Ok(http || ws || ipc)
     }
 
     /// Adds or replaces given [`Methods`] in http module.
@@ -2660,6 +2660,15 @@ mod tests {
     }
 
     #[test]
+    fn test_replace_configured_reports_no_transport() {
+        let mut modules = TransportRpcModules::default();
+        let mut other_module = RpcModule::new(());
+        other_module.register_method("something", |_, _, _| "fails").unwrap();
+
+        assert!(!modules.replace_configured(other_module).unwrap());
+    }
+
+    #[test]
     fn test_add_or_replace_if_module_configured() {
         // Create a config that enables RethRpcModule::Eth for HTTP and WS, but NOT IPC
         let config = TransportRpcModuleConfig::default()
@@ -2709,6 +2718,19 @@ mod tests {
         let ipc = modules.ipc.as_ref().unwrap();
         assert!(ipc.method("eth_existing").is_none());
         assert!(ipc.method("eth_new").is_none());
+    }
+
+    #[test]
+    fn test_add_or_replace_eth_does_not_leak_into_net_only_transport() {
+        let config = TransportRpcModuleConfig::default().with_http([RethRpcModule::Net]);
+        let mut modules =
+            TransportRpcModules { config, http: Some(RpcModule::new(())), ws: None, ipc: None };
+        let mut forwarder = RpcModule::new(());
+        forwarder.register_method("eth_sendRawTransaction", |_, _, _| "forwarded").unwrap();
+
+        modules.add_or_replace_if_module_configured(RethRpcModule::Eth, forwarder).unwrap();
+
+        assert!(modules.http.as_ref().unwrap().method("eth_sendRawTransaction").is_none());
     }
 
     #[test]

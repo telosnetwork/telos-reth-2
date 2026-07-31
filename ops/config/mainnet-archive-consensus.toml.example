@@ -1,0 +1,22 @@
+# Install as /etc/telos-reth/mainnet/archive-consensus.toml, owned by
+# root:telos-reth-config and mode 0440. This is a secret-free template for the companion matched to
+# the legacy retained-history binary. The launcher injects the private systemd JWT credential and
+# the three copy-manifest anchor values into a mode-0400 runtime config.
+log_level = "info"
+chain_id = 40
+execution_endpoint = "http://127.0.0.1:28551"
+jwt_secret = "SYSTEMD_CREDENTIAL"
+ship_endpoint = "ws://127.0.0.1:19000"
+chain_endpoint = "http://127.0.0.1:8889"
+
+batch_size = 50
+prev_hash = "COPY_MANIFEST_PREV_HASH"
+evm_start_block = 0
+validate_hash = "COPY_MANIFEST_VALIDATE_HASH"
+
+data_path = "/var/lib/telos-reth-archive-consensus/mainnet"
+block_checkpoint_interval = 1000
+maximum_sync_range = 100000
+latest_blocks_in_db_num = 2048
+max_retry = 10
+retry_interval = 1000

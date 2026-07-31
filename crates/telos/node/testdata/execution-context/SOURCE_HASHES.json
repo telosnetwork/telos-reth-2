@@ -1,0 +1,121 @@
+{
+  "schema": "telos-reth/golden-evidence-hashes/v1",
+  "algorithm": "sha256",
+  "canonical_fragment_encoding": "jq -S -c selected JSON value, with the final LF removed",
+  "files": [
+    {
+      "path": "PROVENANCE.v1.json",
+      "sha256": "314588219477acdf700f45a6c5cf14bd7fcb7286ececd7f11e9cce608bcadd52"
+    },
+    {
+      "path": "README.md",
+      "sha256": "ee483d3f237b47aafcc611bcc6a4474e3b81567d4846e641e51b6f66b7f94b97"
+    },
+    {
+      "path": "boundaries.v1.json",
+      "sha256": "10857c7612cdc137ad09b11cef1cb6adbe0c627459cf3450fed26cf6385591b1"
+    },
+    {
+      "path": "pre-savanna-runtime-mainnet-423015053.v1.json",
+      "sha256": "a6f38f3cff174ef828dea3b0ecaec3f643a6c93df5bf8fd85ddcf073d1be3e95"
+    },
+    {
+      "path": "raw-transaction-mainnet-400000006.v1.json",
+      "sha256": "45dfd55359f8f87515b06d04f14755b2b7c864a9cad2fc8ac24394e53bae9132"
+    },
+    {
+      "path": "ship-mainnet-423015053.v1.json",
+      "sha256": "c7a07eba3c62b7ce5b6c64f9ed8fa1c41bffa96c2be858d5c85df01f0be64b4a"
+    },
+    {
+      "path": "verify_ship_capture.py",
+      "sha256": "ff33254b596563ef9686967c7fd56904d13e0f540df3880e2d33cc2cc04ffb99"
+    }
+  ],
+  "canonical_fragments": [
+    {
+      "path": "boundaries.v1.json",
+      "json_pointer": "/cases/0/evidence",
+      "id": "mainnet-init-180904219",
+      "sha256": "abb68e59ca5356623a0407465ba3f299d113f3311d73d3a40609b5750e526eb6"
+    },
+    {
+      "path": "boundaries.v1.json",
+      "json_pointer": "/cases/1/evidence",
+      "id": "mainnet-setrevision-332317532",
+      "sha256": "41d2b38c877b6c80005965e300df697617e10188b44aa6baf4953e380a436934"
+    },
+    {
+      "path": "boundaries.v1.json",
+      "json_pointer": "/cases/2/evidence",
+      "id": "testnet-init-136350055",
+      "sha256": "ae934a2d4f4a91d377b2e72a428e4ee67dc66ce53ba690eda62e9923ef4ac1d1"
+    },
+    {
+      "path": "boundaries.v1.json",
+      "json_pointer": "/cases/3/evidence",
+      "id": "testnet-setrevision-275001548",
+      "sha256": "1763a02e00a59a7993fd35ecff13708e79d61ba08874336492613f1f0e82e034"
+    },
+    {
+      "path": "boundaries.v1.json",
+      "json_pointer": "/cases/4/evidence",
+      "id": "testnet-setrevision-278492369",
+      "sha256": "b8c9e5b5b17755b503d3d26fc72714b4c7494bc5afac6a6401a95388713b7ff8"
+    },
+    {
+      "path": "pre-savanna-runtime-mainnet-423015053.v1.json",
+      "json_pointer": "/pre_savanna_binding",
+      "id": "pre-savanna-runtime-binding",
+      "sha256": "ca6b34e0d12cd07b321b04d45fb153ff38ed718be894185af57468fc24a1c623"
+    },
+    {
+      "path": "pre-savanna-runtime-mainnet-423015053.v1.json",
+      "json_pointer": "/provenance",
+      "id": "pre-savanna-runtime-provenance",
+      "sha256": "585de3110a93375db8cfebb72b50bcaf5652b1fde09eb7bebd3d014449d2dee3"
+    },
+    {
+      "path": "pre-savanna-runtime-mainnet-423015053.v1.json",
+      "json_pointer": "/evidence",
+      "id": "pre-savanna-runtime-evidence",
+      "sha256": "d877d63628f40966b6d7b82667545ae5a34458e2c52b9d04642c9c3447b1858b"
+    },
+    {
+      "path": "raw-transaction-mainnet-400000006.v1.json",
+      "json_pointer": "/evidence/native_action",
+      "id": "raw-native-action",
+      "sha256": "ccd5aa999e03b72da3d860c0ccc095c77e99a8673757b04f91b89aedce4e62db"
+    },
+    {
+      "path": "raw-transaction-mainnet-400000006.v1.json",
+      "json_pointer": "/evidence/native_deltas",
+      "id": "raw-native-deltas",
+      "sha256": "966e1582e3bc8e9801f771e65779b6ae7bc87f49163e42d95f6f79035df5d105"
+    },
+    {
+      "path": "raw-transaction-mainnet-400000006.v1.json",
+      "json_pointer": "/evidence/account_index_resolution",
+      "id": "raw-account-index-resolution",
+      "sha256": "d97b96f4e4dc2ca2dac56f5530cda7f76e4ac518170194b2a5bd45a25104f4aa"
+    },
+    {
+      "path": "raw-transaction-mainnet-400000006.v1.json",
+      "json_pointer": "/evidence/evm_block",
+      "id": "raw-evm-block",
+      "sha256": "6fb7d52efcc636eef89a6afe599334f73624554af4afe5390e1257920d6155dc"
+    },
+    {
+      "path": "raw-transaction-mainnet-400000006.v1.json",
+      "json_pointer": "/evidence/evm_receipt",
+      "id": "raw-evm-receipt",
+      "sha256": "be79959bf1607ef256d0b76063888074f05b0daf7a833b61ed0f299f56f8cd33"
+    },
+    {
+      "path": "raw-transaction-mainnet-400000006.v1.json",
+      "json_pointer": "/evidence/debug_raw_transaction",
+      "id": "raw-debug-transaction",
+      "sha256": "3fde3cae48482e82cdef8e69bd3172199a6b21d1e56fd1f296cb0e78a450e1c5"
+    }
+  ]
+}

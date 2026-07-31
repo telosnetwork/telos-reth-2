@@ -10,6 +10,7 @@ echo "Building cargo docs..."
 
 # Build the documentation
 export RUSTDOCFLAGS="--cfg docsrs --show-type-layout --generate-link-to-definition --enable-index-page -Zunstable-options"
-cargo +nightly docs --exclude "example-*"
+docs_toolchain="${RETH_DOCS_TOOLCHAIN:-nightly}"
+cargo "+${docs_toolchain}" docs --exclude "example-*"
 
 echo "Cargo docs built successfully at ./target/doc"

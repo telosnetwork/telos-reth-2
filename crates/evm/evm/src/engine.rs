@@ -1,8 +1,17 @@
-use crate::{execute::ExecutableTxFor, ConfigureEvm, EvmEnvFor, ExecutionCtxFor, TxEnvFor};
+use crate::{
+    execute::ExecutableTxFor, ConfigureEvm, EvmEnvFor, ExecutionCtxFor, ExecutionReconciliation,
+    TxEnvFor,
+};
 use alloy_consensus::transaction::Either;
-use alloy_evm::{block::ExecutableTxParts, RecoveredTx};
+use alloy_evm::{
+    block::{BlockExecutionResult, ExecutableTxParts},
+    RecoveredTx,
+};
+use alloy_primitives::B256;
 use rayon::prelude::*;
-use reth_primitives_traits::TxTy;
+use reth_execution_errors::BlockExecutionError;
+use reth_primitives_traits::{BlockTy, HeaderTy, ReceiptTy, SealedBlock, TxTy};
+use revm::{database::State, Database};
 
 /// [`ConfigureEvm`] extension providing methods for executing payloads.
 pub trait ConfigureEngineEvm<ExecutionData>: ConfigureEvm {
@@ -15,11 +24,82 @@ pub trait ConfigureEngineEvm<ExecutionData>: ConfigureEvm {
         payload: &'a ExecutionData,
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error>;
 
+    /// Returns an EVM environment for a block buffered by the Engine API.
+    ///
+    /// The default is identical to stored block replay. Chains with authenticated payload sidecars
+    /// may override this without exposing unaccepted metadata to ordinary replay or public RPC.
+    fn evm_env_for_engine_block(
+        &self,
+        header: &HeaderTy<Self::Primitives>,
+    ) -> Result<EvmEnvFor<Self>, Self::Error> {
+        self.evm_env(header)
+    }
+
+    /// Returns execution context for a block buffered by the Engine API.
+    fn context_for_engine_block<'a>(
+        &self,
+        block: &'a SealedBlock<BlockTy<Self::Primitives>>,
+    ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
+        self.context_for_block(block)
+    }
+
     /// Returns an [`ExecutableTxIterator`] for the given payload.
     fn tx_iterator_for_payload(
         &self,
         payload: &ExecutionData,
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error>;
+
+    /// Applies chain-specific state required immediately before a payload transaction executes.
+    fn prepare_payload_transaction<DB>(
+        &self,
+        _payload: &ExecutionData,
+        _transaction_index: usize,
+        _state: &mut State<DB>,
+    ) -> Result<(), BlockExecutionError>
+    where
+        DB: Database,
+    {
+        Ok(())
+    }
+
+    /// Reconciles local execution with authenticated chain-specific execution data.
+    fn reconcile_payload_execution<DB>(
+        &self,
+        _payload: &ExecutionData,
+        _state: &mut State<DB>,
+        _result: &mut BlockExecutionResult<ReceiptTy<Self::Primitives>>,
+    ) -> Result<ExecutionReconciliation, BlockExecutionError>
+    where
+        DB: Database,
+    {
+        Ok(ExecutionReconciliation::Unchanged)
+    }
+
+    /// Reconciles a block buffered by the Engine API.
+    fn reconcile_engine_block_execution<DB>(
+        &self,
+        block: &SealedBlock<BlockTy<Self::Primitives>>,
+        state: &mut State<DB>,
+        result: &mut BlockExecutionResult<ReceiptTy<Self::Primitives>>,
+    ) -> Result<ExecutionReconciliation, BlockExecutionError>
+    where
+        DB: Database,
+    {
+        self.reconcile_block_execution(block, state, result)
+    }
+
+    /// Checks a computed state root against the root stored in the payload header.
+    ///
+    /// Networks whose canonical headers carry an explicit placeholder can override this while
+    /// retaining all other post-execution validation.
+    fn state_root_matches(
+        &self,
+        _payload: Option<&ExecutionData>,
+        computed: B256,
+        expected: B256,
+    ) -> bool {
+        computed == expected
+    }
 }
 
 /// Converts a raw transaction into an executable transaction.

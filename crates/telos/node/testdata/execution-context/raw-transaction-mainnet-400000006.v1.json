@@ -1,0 +1,207 @@
+{
+  "schema": "telos-reth/raw-transaction-correlation/v1",
+  "captured_at": "2026-07-21T18:27:55Z",
+  "network": {
+    "name": "mainnet",
+    "evm_chain_id": 40,
+    "native_chain_id": "4667b205c6838ef70ff7988f6e8257e8be0e1284a2f59699054a018f743b1d11",
+    "native_to_evm_block_delta": 36
+  },
+  "expected": {
+    "native_block_number": 400000006,
+    "evm_block_number": 399999970,
+    "native_action_ordinal": 1,
+    "evm_transaction_index": 0,
+    "evm_transaction_hash": "0xa6838658dd8ab6b7d0044316b97bacc9c9a797a866e514bf2b0fb9ed49ed5e49",
+    "correlations": {
+      "evm_block_number_equals_native_minus_delta": true,
+      "evm_extra_data_equals_prefixed_native_block_id": true,
+      "native_raw_bytes_equal_debug_raw_transaction_ignoring_hex_prefix_and_case": true,
+      "native_config_last_block_equals_evm_block_number": true,
+      "native_config_gas_used_equals_receipt_cumulative_gas_used": true,
+      "native_config_gas_price_equals_receipt_effective_gas_price": true,
+      "native_account_delta_address_equals_evm_sender": true,
+      "native_accountstate_scope_resolves_to_evm_recipient": true
+    }
+  },
+  "evidence": {
+    "native_action": {
+      "block_num": 400000006,
+      "block_id": "17d784067b1e0307e39344d663f312cc37b460322381af0bea6931d2d9d1bea1",
+      "timestamp": "2025-04-18T13:48:06.000",
+      "producer": "bp.boid",
+      "trx_id": "314c9217b6b23bc317308658821813df2bcd3ba2d7a0ed0b313384cbe1b33264",
+      "action_ordinal": 1,
+      "global_sequence": 10181315312,
+      "act": {
+        "account": "eosio.evm",
+        "name": "raw",
+        "authorization": [
+          {
+            "actor": "rpc.evm",
+            "permission": "rpc"
+          }
+        ],
+        "data": {
+          "ram_payer": "eosio.evm",
+          "tx": "F9012D830BB3DB857AE011A84B83035F30942D61DCDD36F10B22176E0433B86F74567D529AAA80B8C43161B7F600000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000016A0000000000000000000000000000000000000000000000CFF6750380291ED6C700000000000000000000000000000000000000000000000000000000007A1348000000000000000000000000000000000000000000000000000000000000001074A091784FDE59F6144158A21D3CBEE96CDAFB7C714369E4305894E14DE0975C2D01A022C7BFBA91825EA6E3A2CAB1E8D6FF106C6F96412D7717F7A2083382DD8BD8B5",
+          "estimate_gas": false,
+          "sender": null
+        }
+      }
+    },
+    "native_deltas": {
+      "config": {
+        "timestamp": "2025-04-18T13:48:06.000",
+        "present": 1,
+        "code": "eosio.evm",
+        "scope": "eosio.evm",
+        "table": "config",
+        "primary_key": "4982871454518345728",
+        "payer": "eosio.evm",
+        "block_num": 400000006,
+        "block_id": "17d784067b1e0307e39344d663f312cc37b460322381af0bea6931d2d9d1bea1",
+        "data": {
+          "trx_index": 0,
+          "last_block": 399999970,
+          "gas_used_block": "0000000000000000000000000000000000000000000000000000000000009471",
+          "gas_price": "0000000000000000000000000000000000000000000000000000007AE011A84B",
+          "revision": 1
+        }
+      },
+      "account": {
+        "timestamp": "2025-04-18T13:48:06.000",
+        "present": 1,
+        "code": "eosio.evm",
+        "scope": "eosio.evm",
+        "table": "account",
+        "primary_key": "39471",
+        "payer": "eosio.evm",
+        "block_num": 400000006,
+        "block_id": "17d784067b1e0307e39344d663f312cc37b460322381af0bea6931d2d9d1bea1",
+        "data": {
+          "index": "39471",
+          "address": "339D413CCEFD986B1B3647A9CFA9CBBE70A30749",
+          "account": "",
+          "nonce": "766940",
+          "code": "",
+          "balance": "00000000000000000000000000000000000000000000006004367489826970FF"
+        }
+      },
+      "accountstate": {
+        "timestamp": "2025-04-18T13:48:06.000",
+        "present": 1,
+        "code": "eosio.evm",
+        "scope": ".........2h2",
+        "scope_as_u64": 39456,
+        "table": "accountstate",
+        "primary_key": "140",
+        "payer": "eosio.evm",
+        "block_num": 400000006,
+        "block_id": "17d784067b1e0307e39344d663f312cc37b460322381af0bea6931d2d9d1bea1",
+        "data": {
+          "index": "140",
+          "key": "634F554F509F02CDDE0591552FEC0838616D8D56B25BD18F88F057589F66186C",
+          "value": "000000000000001000000000007A134800000000000000CFF6750380291ED6C7"
+        }
+      },
+      "resources": {
+        "timestamp": "2025-04-18T13:48:06.000",
+        "present": 1,
+        "code": "eosio.evm",
+        "scope": "eosio.evm",
+        "table": "resources",
+        "primary_key": "13452618623940034560",
+        "payer": "eosio.evm",
+        "block_num": 400000006,
+        "block_id": "17d784067b1e0307e39344d663f312cc37b460322381af0bea6931d2d9d1bea1",
+        "data": {
+          "gas_per_byte": "0000000000000000000000000000000000000000000000000000000000000045",
+          "byte_cost": "0000000000000000000000000000000000000000000000000000211E64C25C4C",
+          "bytes_used": "1445778779",
+          "bytes_bought": "4106891404",
+          "target_bytes_free": "2684354560",
+          "min_byte_buy": "20000",
+          "fee_balance": "0000000000000000000000000000000000000000000001161FBE01EBA5ED9D4D",
+          "fee_transfer_pct": 100
+        }
+      }
+    },
+    "account_index_resolution": {
+      "antelope_name": ".........2h2",
+      "decoded_u64": 39456,
+      "observed_account_row": {
+        "index": 39456,
+        "address": "2d61dcdd36f10b22176e0433b86f74567d529aaa",
+        "account": "",
+        "nonce": 1,
+        "balance": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "evm_block": {
+      "hash": "0x05f404eb9f7108a512d28b6aa5699966801c3b7e6519c86cde3119ea9f600bda",
+      "parentHash": "0x52e5343c0043cd8941e88d1869860c7a94f10f701c2d12330b3335a5cadd3f35",
+      "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+      "miner": "0x0000000000000000000000000000000000000000",
+      "stateRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+      "transactionsRoot": "0x7ceab4f8c020ba809829f606be7885900695431de479825c8cc8674c570aa530",
+      "receiptsRoot": "0x61cba0f18dcf66823de66acbc06a9926253ab0b7803a81ae7f2d34af7529d8cc",
+      "difficulty": "0x0",
+      "number": "0x17d783e2",
+      "gasLimit": "0x7fffffff",
+      "gasUsed": "0x9471",
+      "timestamp": "0x68025816",
+      "totalDifficulty": "0x0",
+      "extraData": "0x17d784067b1e0307e39344d663f312cc37b460322381af0bea6931d2d9d1bea1",
+      "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "nonce": "0x0000000000000000",
+      "uncles": [],
+      "transactions": [
+        {
+          "hash": "0xa6838658dd8ab6b7d0044316b97bacc9c9a797a866e514bf2b0fb9ed49ed5e49",
+          "nonce": "0xbb3db",
+          "blockHash": "0x05f404eb9f7108a512d28b6aa5699966801c3b7e6519c86cde3119ea9f600bda",
+          "blockNumber": "0x17d783e2",
+          "transactionIndex": "0x0",
+          "from": "0x339d413ccefd986b1b3647a9cfa9cbbe70a30749",
+          "to": "0x2d61dcdd36f10b22176e0433b86f74567d529aaa",
+          "value": "0x0",
+          "gasPrice": "0x7ae011a84b",
+          "gas": "0x35f30",
+          "input": "0x3161b7f600000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000016a0000000000000000000000000000000000000000000000cff6750380291ed6c700000000000000000000000000000000000000000000000000000000007a13480000000000000000000000000000000000000000000000000000000000000010",
+          "r": "0x91784fde59f6144158a21d3cbee96cdafb7c714369e4305894e14de0975c2d01",
+          "s": "0x22c7bfba91825ea6e3a2cab1e8d6ff106c6f96412d7717f7a2083382dd8bd8b5",
+          "v": "0x74",
+          "chainId": "0x28",
+          "type": "0x0"
+        }
+      ],
+      "size": "0x355"
+    },
+    "evm_receipt": {
+      "status": "0x1",
+      "cumulativeGasUsed": "0x9471",
+      "logs": [],
+      "type": "0x0",
+      "transactionHash": "0xa6838658dd8ab6b7d0044316b97bacc9c9a797a866e514bf2b0fb9ed49ed5e49",
+      "transactionIndex": "0x0",
+      "blockHash": "0x05f404eb9f7108a512d28b6aa5699966801c3b7e6519c86cde3119ea9f600bda",
+      "blockNumber": "0x17d783e2",
+      "gasUsed": "0x9471",
+      "effectiveGasPrice": "0x7ae011a84b",
+      "from": "0x339d413ccefd986b1b3647a9cfa9cbbe70a30749",
+      "to": "0x2d61dcdd36f10b22176e0433b86f74567d529aaa",
+      "contractAddress": null
+    },
+    "debug_raw_transaction": "0xf9012d830bb3db857ae011a84b83035f30942d61dcdd36f10b22176e0433b86f74567d529aaa80b8c43161b7f600000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000016a0000000000000000000000000000000000000000000000cff6750380291ed6c700000000000000000000000000000000000000000000000000000000007a1348000000000000000000000000000000000000000000000000000000000000001074a091784fde59f6144158a21d3cbee96cdafb7c714369e4305894e14de0975c2d01a022c7bfba91825ea6e3a2cab1e8d6ff106c6f96412d7717f7a2083382dd8bd8b5"
+  },
+  "sources": [
+    "GET https://mainnet.telos.net/v2/history/get_transaction?id=314c9217b6b23bc317308658821813df2bcd3ba2d7a0ed0b313384cbe1b33264",
+    "GET https://mainnet.telos.net/v2/history/get_deltas?code=eosio.evm&after=400000006&before=400000006&limit=100",
+    "POST https://mainnet.telos.net/v1/chain/get_table_rows account index 39456 (current-state resolution only)",
+    "POST https://rpc.telos.net/evm eth_getBlockByNumber(0x17d783e2,true)",
+    "POST https://rpc.telos.net/evm eth_getTransactionReceipt(0xa6838658dd8ab6b7d0044316b97bacc9c9a797a866e514bf2b0fb9ed49ed5e49)",
+    "POST https://rpc.telos.net/evm debug_getRawTransaction(0xa6838658dd8ab6b7d0044316b97bacc9c9a797a866e514bf2b0fb9ed49ed5e49)",
+    "POST https://rpc.telos.net/evm web3_sha3(native raw bytes)"
+  ]
+}

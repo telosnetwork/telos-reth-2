@@ -1,0 +1,122 @@
+ARG RUST_IMAGE=docker.io/library/rust:1.95.0-trixie@sha256:f49565f188ee00bc2a18dd418183f2c5f23ef7d6e691890517ed341a598f67c3
+ARG RUNTIME_IMAGE=gcr.io/distroless/cc-debian13:nonroot@sha256:d97bc0a941b8d4be647dc0ee75b264ddbb772f1ac5ba690a4309c00723b23775
+
+FROM ${RUST_IMAGE} AS builder
+
+WORKDIR /src
+
+# Build dependencies come from an immutable Debian snapshot so the digest-pinned
+# compiler image cannot silently resolve newer native libraries.
+ENV DEBIAN_SNAPSHOT=20260520T000000Z
+RUN printf '%s\n' \
+        'Types: deb' \
+        "URIs: https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}" \
+        'Suites: trixie trixie-updates' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        'Check-Valid-Until: no' \
+        '' \
+        'Types: deb' \
+        "URIs: https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}" \
+        'Suites: trixie-security' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        'Check-Valid-Until: no' \
+        > /etc/apt/sources.list.d/debian.sources && \
+    apt-get -o Acquire::Check-Valid-Until=false update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates=20250419 \
+        clang=1:19.0-63 \
+        libclang-dev=1:19.0-63 \
+        lld=1:19.0-63 \
+        m4=1.4.19-8 \
+        pkg-config=1.8.1-4 && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN cargo install cargo-auditable --version 0.7.5 --locked
+
+COPY . .
+
+ARG SOURCE_COMMIT
+ARG SOURCE_DATE_EPOCH
+ARG TELOS_VERSION
+ARG UPSTREAM_RELEASE
+ARG UPSTREAM_COMMIT
+ARG TARGETARCH
+
+ENV CARGO_NET_GIT_FETCH_WITH_CLI=true \
+    VERGEN_GIT_DIRTY=false
+
+# Pin jemalloc's x86 host probes so heterogeneous runner page and address-space geometry
+# cannot change the linked binary.
+RUN test -n "${SOURCE_COMMIT}" && \
+    test -n "${SOURCE_DATE_EPOCH}" && \
+    test -n "${TELOS_VERSION}" && \
+    test -n "${UPSTREAM_RELEASE}" && \
+    test -n "${UPSTREAM_COMMIT}" && \
+    rm -rf .git && \
+    case "${TARGETARCH}" in \
+        amd64) \
+            arch_flags="-C target-cpu=x86-64-v2"; \
+            export JEMALLOC_SYS_WITH_LG_PAGE=12; \
+            export JEMALLOC_SYS_WITH_LG_HUGEPAGE=21; \
+            export JEMALLOC_SYS_WITH_LG_VADDR=57 \
+            ;; \
+        arm64) arch_flags="-C target-cpu=generic"; export JEMALLOC_SYS_WITH_LG_PAGE=16 ;; \
+        *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac && \
+    export VERGEN_GIT_SHA="${SOURCE_COMMIT}" && \
+    export VERGEN_GIT_DESCRIBE="telos-v${TELOS_VERSION}" && \
+    export RUSTFLAGS="-C symbol-mangling-version=v0 -C link-arg=-Wl,--build-id=none -C metadata= --remap-path-prefix=/src=. ${arch_flags}" && \
+    export SOURCE_DATE_EPOCH && \
+    LC_ALL=C TZ=UTC cargo auditable build \
+        --locked \
+        --profile maxperf \
+        --package telos-reth \
+        --bin telos-reth \
+        --bin telos-checkpoint-bootstrap && \
+    LC_ALL=C TZ=UTC cargo auditable build \
+        --locked \
+        --profile maxperf \
+        --package telos-rpc-router \
+        --bin telos-rpc-router
+
+FROM scratch AS artifact
+COPY --from=builder /src/target/maxperf/telos-reth /telos-reth
+COPY --from=builder /src/target/maxperf/telos-checkpoint-bootstrap /telos-checkpoint-bootstrap
+COPY --from=builder /src/target/maxperf/telos-rpc-router /telos-rpc-router
+
+FROM ${RUNTIME_IMAGE} AS runtime-base
+
+ARG SOURCE_COMMIT
+ARG TELOS_VERSION
+ARG UPSTREAM_RELEASE
+ARG UPSTREAM_COMMIT
+
+LABEL org.opencontainers.image.title="Telos Reth" \
+      org.opencontainers.image.description="Telos execution client based on Reth" \
+      org.opencontainers.image.source="https://github.com/telosnetwork/telos-reth-2" \
+      org.opencontainers.image.url="https://github.com/telosnetwork/telos-reth-2" \
+      org.opencontainers.image.documentation="https://github.com/telosnetwork/telos-reth-2/tree/main/docs/telos" \
+      org.opencontainers.image.licenses="MIT OR Apache-2.0" \
+      org.opencontainers.image.version="${TELOS_VERSION}" \
+      org.opencontainers.image.revision="${SOURCE_COMMIT}" \
+      org.telos.reth.upstream.release="${UPSTREAM_RELEASE}" \
+      org.telos.reth.upstream.commit="${UPSTREAM_COMMIT}"
+
+COPY LICENSE-APACHE LICENSE-MIT /licenses/
+COPY LICENSES /licenses/dependencies/
+COPY README.md /usr/share/doc/telos-reth/README.md
+
+EXPOSE 30303/tcp 30303/udp 8545/tcp 8546/tcp 8551/tcp 9001/tcp
+STOPSIGNAL SIGTERM
+USER nonroot:nonroot
+ENTRYPOINT ["/usr/local/bin/telos-reth"]
+
+# Release automation injects the already attested archive binary here, ensuring
+# the container and downloadable archive contain exactly the same executable.
+FROM runtime-base AS runtime-prebuilt
+COPY --chmod=0555 dist/container/telos-reth /usr/local/bin/telos-reth
+
+FROM runtime-base AS runtime
+COPY --from=builder --chmod=0555 /src/target/maxperf/telos-reth /usr/local/bin/telos-reth

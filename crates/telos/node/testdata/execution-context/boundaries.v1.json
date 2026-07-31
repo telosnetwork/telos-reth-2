@@ -1,0 +1,426 @@
+{
+  "schema": "telos-reth/execution-context-boundaries/v1",
+  "captured_at": "2026-07-21T18:27:55Z",
+  "networks": {
+    "mainnet": {
+      "evm_chain_id": 40,
+      "native_chain_id": "4667b205c6838ef70ff7988f6e8257e8be0e1284a2f59699054a018f743b1d11",
+      "native_to_evm_block_delta": 36
+    },
+    "testnet": {
+      "evm_chain_id": 41,
+      "native_chain_id": "1eaa0824707c8c16bd25145493bf062aecddfeb56c736f6ba6397f3195f33c9f",
+      "native_to_evm_block_delta": 57
+    }
+  },
+  "cases": [
+    {
+      "id": "mainnet-init-180904219",
+      "network": "mainnet",
+      "expected": {
+        "native_block_number": 180904219,
+        "evm_block_number": 180904183,
+        "schedule_change": {
+          "kind": "fixed_gas_price",
+          "boundary": 0,
+          "value": "0x745ef2d631"
+        }
+      },
+      "evidence": {
+        "native_action": {
+          "block_num": 180904219,
+          "block_id": "0ac8611b0b2e8a96beb8bc60d4a58b08152414f13b5b1b9e650d4610444198de",
+          "timestamp": "2021-10-27T20:20:15.000",
+          "producer": "theteloscope",
+          "trx_id": "2000ff9639a6f0b3e80661daac800575ed7dca282a287f9fa48bb012953a42ec",
+          "action_ordinal": 1,
+          "global_sequence": 9783646638,
+          "act": {
+            "account": "eosio.evm",
+            "name": "init",
+            "authorization": [
+              {
+                "actor": "eosio.evm",
+                "permission": "active"
+              }
+            ],
+            "data": {
+              "start_bytes": "2684354560",
+              "start_cost": "92574.8884 TLOS",
+              "target_free": "2684354560",
+              "min_buy": "20000",
+              "fee_transfer_pct": 100,
+              "gas_per_byte": "69"
+            }
+          }
+        },
+        "native_config_delta": {
+          "present": 1,
+          "code": "eosio.evm",
+          "scope": "eosio.evm",
+          "table": "config",
+          "primary_key": "4982871454518345728",
+          "payer": "eosio.evm",
+          "block_num": 180904219,
+          "block_id": "0ac8611b0b2e8a96beb8bc60d4a58b08152414f13b5b1b9e650d4610444198de",
+          "data": {
+            "trx_index": 0,
+            "last_block": 0,
+            "gas_used_block": "0000000000000000000000000000000000000000000000000000000000000000",
+            "gas_price": "000000000000000000000000000000000000000000000000000000745EF2D631"
+          }
+        },
+        "native_resources_delta": {
+          "present": 1,
+          "code": "eosio.evm",
+          "scope": "eosio.evm",
+          "table": "resources",
+          "primary_key": "13452618623940034560",
+          "payer": "eosio.evm",
+          "block_num": 180904219,
+          "block_id": "0ac8611b0b2e8a96beb8bc60d4a58b08152414f13b5b1b9e650d4610444198de",
+          "data": {
+            "gas_per_byte": "0000000000000000000000000000000000000000000000000000000000000045",
+            "byte_cost": "00000000000000000000000000000000000000000000000000001F5D9773BB3C",
+            "bytes_used": "0",
+            "bytes_bought": "2684354560",
+            "target_bytes_free": "2684354560",
+            "min_byte_buy": "20000",
+            "fee_balance": "0000000000000000000000000000000000000000000000000000000000000000",
+            "fee_transfer_pct": 100
+          }
+        },
+        "evm_block": {
+          "number": "0xac860f7",
+          "hash": "0x8ae5ea558d899a7d3a2c3949c034388a00385086417fc99b8d6d8a82faa2a062",
+          "parentHash": "0x8c608078163ab4d6a8a0055b6b6c592aa3f6adf32332de52bc51b42561feba7a",
+          "timestamp": "0x6179b47f",
+          "extraData": "0x0ac8611b0b2e8a96beb8bc60d4a58b08152414f13b5b1b9e650d4610444198de",
+          "gasLimit": "0x7fffffff",
+          "gasUsed": "0x0",
+          "stateRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+          "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+          "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+          "transactions": []
+        }
+      },
+      "sources": [
+        "GET https://telos.eosusa.io/v2/history/get_actions?account=eosio.evm&after=180904219&before=180904219&limit=100&sort=asc",
+        "GET https://telos.eosusa.io/v2/history/get_deltas?code=eosio.evm&after=180904219&before=180904219&limit=100",
+        "POST https://rpc.telos.net/evm eth_getBlockByNumber(0xac860f7,false)"
+      ]
+    },
+    {
+      "id": "mainnet-setrevision-332317532",
+      "network": "mainnet",
+      "expected": {
+        "native_block_number": 332317532,
+        "evm_block_number": 332317496,
+        "schedule_change": {
+          "kind": "revision",
+          "boundary": 0,
+          "value": 1
+        }
+      },
+      "evidence": {
+        "native_action": {
+          "block_num": 332317532,
+          "block_id": "13cec35c76c9b8aa2626d6b267493c2c4c3d4ebc40a98c9ad3a2806e8d3914d9",
+          "timestamp": "2024-03-22T17:29:58.000",
+          "producer": "teamgreymass",
+          "trx_id": "99929fc014ab9ed9d5850934c3b9fc64d270b3044add0126c415200fc07aed47",
+          "action_ordinal": 3,
+          "global_sequence": 10065236174,
+          "act": {
+            "account": "eosio.evm",
+            "name": "setrevision",
+            "authorization": [
+              {
+                "actor": "eosio.evm",
+                "permission": "active"
+              }
+            ],
+            "data": {
+              "new_revision": 1
+            }
+          }
+        },
+        "native_config_delta": {
+          "present": 1,
+          "code": "eosio.evm",
+          "scope": "eosio.evm",
+          "table": "config",
+          "primary_key": "4982871454518345728",
+          "payer": "eosio.evm",
+          "block_num": 332317532,
+          "block_id": "13cec35c76c9b8aa2626d6b267493c2c4c3d4ebc40a98c9ad3a2806e8d3914d9",
+          "data": {
+            "trx_index": 0,
+            "last_block": 332317408,
+            "gas_used_block": "0000000000000000000000000000000000000000000000000000000000014010",
+            "gas_price": "00000000000000000000000000000000000000000000000000000077A63043D0",
+            "revision": 1
+          }
+        },
+        "evm_block": {
+          "number": "0x13cec338",
+          "hash": "0xf66e3bc7ebd9a635fc051e80044c04d8ab55be7a6e9eb3f12043164686a9030e",
+          "parentHash": "0x79f2f32f7df1cb1ebda2559af415f8de0037a8f04b1162aaa9548b943bc619f6",
+          "timestamp": "0x65fdc016",
+          "extraData": "0x13cec35c76c9b8aa2626d6b267493c2c4c3d4ebc40a98c9ad3a2806e8d3914d9",
+          "gasLimit": "0x7fffffff",
+          "gasUsed": "0x0",
+          "stateRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+          "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+          "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+          "transactions": []
+        }
+      },
+      "sources": [
+        "GET https://telos.eosusa.io/v2/history/get_actions?account=eosio.evm&after=332317532&before=332317532&limit=100&sort=asc",
+        "GET https://telos.eosusa.io/v2/history/get_deltas?code=eosio.evm&after=332317532&before=332317532&limit=100",
+        "POST https://rpc.telos.net/evm eth_getBlockByNumber(0x13cec338,false)"
+      ]
+    },
+    {
+      "id": "testnet-init-136350055",
+      "network": "testnet",
+      "expected": {
+        "native_block_number": 136350055,
+        "evm_block_number": 136349998,
+        "schedule_change": {
+          "kind": "fixed_gas_price",
+          "boundary": 0,
+          "value": "0x745ef2d631"
+        }
+      },
+      "evidence": {
+        "native_action": {
+          "block_num": 136350055,
+          "block_id": "0820896768498670bdf18d63f6d6b8123f4d433ae61ecb3403ac06ddc38450ee",
+          "timestamp": "2021-10-20T23:42:46.000",
+          "producer": "monsterblock",
+          "trx_id": "ec2bf1523c621b0efc23e8e5c56261a0f2a1d3a6c69bd292986b688da0fe52bb",
+          "action_ordinal": 1,
+          "global_sequence": 164591601,
+          "act": {
+            "account": "eosio.evm",
+            "name": "init",
+            "authorization": [
+              {
+                "actor": "eosio.evm",
+                "permission": "active"
+              }
+            ],
+            "data": {
+              "start_bytes": "2684354560",
+              "start_cost": "92574.8884 TLOS",
+              "target_free": "2684354560",
+              "min_buy": "20000",
+              "fee_transfer_pct": 90,
+              "gas_per_byte": "69"
+            }
+          }
+        },
+        "native_config_delta": {
+          "present": 1,
+          "code": "eosio.evm",
+          "scope": "eosio.evm",
+          "table": "config",
+          "primary_key": "4982871454518345728",
+          "payer": "eosio.evm",
+          "block_num": 136350055,
+          "block_id": "0820896768498670bdf18d63f6d6b8123f4d433ae61ecb3403ac06ddc38450ee",
+          "data": {
+            "trx_index": 0,
+            "last_block": 0,
+            "gas_used_block": "0000000000000000000000000000000000000000000000000000000000000000",
+            "gas_price": "000000000000000000000000000000000000000000000000000000745EF2D631"
+          }
+        },
+        "native_resources_delta": {
+          "present": 1,
+          "code": "eosio.evm",
+          "scope": "eosio.evm",
+          "table": "resources",
+          "primary_key": "13452618623940034560",
+          "payer": "eosio.evm",
+          "block_num": 136350055,
+          "block_id": "0820896768498670bdf18d63f6d6b8123f4d433ae61ecb3403ac06ddc38450ee",
+          "data": {
+            "gas_per_byte": "0000000000000000000000000000000000000000000000000000000000000045",
+            "byte_cost": "00000000000000000000000000000000000000000000000000001F5D9773BB3C",
+            "bytes_used": "0",
+            "bytes_bought": "2684354560",
+            "target_bytes_free": "2684354560",
+            "min_byte_buy": "20000",
+            "fee_balance": "0000000000000000000000000000000000000000000000000000000000000000",
+            "fee_transfer_pct": 90
+          }
+        },
+        "evm_block": {
+          "number": "0x820892e",
+          "hash": "0xb61e6942526350d6df89621fb61551df83e5250545df46bfffabd44d2ad1b4a0",
+          "parentHash": "0xb8c0091b46be21c66aeb69504d43413de4b3a45197351aa12c300b40869537a4",
+          "timestamp": "0x6170a976",
+          "extraData": "0x0820896768498670bdf18d63f6d6b8123f4d433ae61ecb3403ac06ddc38450ee",
+          "gasLimit": "0x7fffffff",
+          "gasUsed": "0x0",
+          "stateRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+          "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+          "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+          "transactions": []
+        }
+      },
+      "sources": [
+        "GET https://test.telos.eosusa.io/v2/history/get_actions?account=eosio.evm&after=136350055&before=136350055&limit=100&sort=asc",
+        "GET https://test.telos.eosusa.io/v2/history/get_deltas?code=eosio.evm&after=136350055&before=136350055&limit=100",
+        "POST https://rpc.testnet.telos.net/evm eth_getBlockByNumber(0x820892e,false)"
+      ]
+    },
+    {
+      "id": "testnet-setrevision-275001548",
+      "network": "testnet",
+      "expected": {
+        "native_block_number": 275001548,
+        "evm_block_number": 275001491,
+        "schedule_change": {
+          "kind": "revision",
+          "boundary": 0,
+          "value": 1
+        }
+      },
+      "evidence": {
+        "native_action": {
+          "block_num": 275001548,
+          "block_id": "106430cc200d1e6c1749ef1af60c7361950ab5324931b6bdcb9329e7fc6c49ed",
+          "timestamp": "2024-01-02T18:45:43.500",
+          "producer": "theteloscrew",
+          "trx_id": "ac0b7e47e891a56b36fdb310aba4ad374d21017e3aa5c405ed8cf15b4e699630",
+          "action_ordinal": 1,
+          "global_sequence": 382999795,
+          "act": {
+            "account": "eosio.evm",
+            "name": "setrevision",
+            "authorization": [
+              {
+                "actor": "eosio.evm",
+                "permission": "active"
+              }
+            ],
+            "data": {
+              "new_revision": 1
+            }
+          }
+        },
+        "native_config_delta": {
+          "present": 1,
+          "code": "eosio.evm",
+          "scope": "eosio.evm",
+          "table": "config",
+          "primary_key": "4982871454518345728",
+          "payer": "eosio.evm",
+          "block_num": 275001548,
+          "block_id": "106430cc200d1e6c1749ef1af60c7361950ab5324931b6bdcb9329e7fc6c49ed",
+          "data": {
+            "trx_index": 0,
+            "last_block": 275001416,
+            "gas_used_block": "0000000000000000000000000000000000000000000000000000000000009506",
+            "gas_price": "000000000000000000000000000000000000000000000000000000754D490126",
+            "revision": 1
+          }
+        },
+        "evm_block": {
+          "number": "0x10643093",
+          "hash": "0x151a7e3df9ff9a41c3eb527507d1e2aed2445d4bf346c6bab75d9c69819d4e9d",
+          "parentHash": "0x4d88840da11fb32a39fdb1ca5c1f627667ba58af8fdaa8c2661f634be24524f2",
+          "timestamp": "0x659459d7",
+          "extraData": "0x106430cc200d1e6c1749ef1af60c7361950ab5324931b6bdcb9329e7fc6c49ed",
+          "gasLimit": "0x7fffffff",
+          "gasUsed": "0x0",
+          "stateRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+          "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+          "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+          "transactions": []
+        }
+      },
+      "sources": [
+        "GET https://test.telos.eosusa.io/v2/history/get_actions?account=eosio.evm&after=275001548&before=275001548&limit=100&sort=asc",
+        "GET https://test.telos.eosusa.io/v2/history/get_deltas?code=eosio.evm&after=275001548&before=275001548&limit=100",
+        "POST https://rpc.testnet.telos.net/evm eth_getBlockByNumber(0x10643093,false)"
+      ]
+    },
+    {
+      "id": "testnet-setrevision-278492369",
+      "network": "testnet",
+      "expected": {
+        "native_block_number": 278492369,
+        "evm_block_number": 278492312,
+        "schedule_change": {
+          "kind": "revision",
+          "boundary": 0,
+          "value": 1
+        }
+      },
+      "evidence": {
+        "native_action": {
+          "block_num": 278492369,
+          "block_id": "109974d159d53fe84c2e630aaa806813c0e3e4543dd6cd36ad82069d8a364bbc",
+          "timestamp": "2024-01-22T23:54:10.500",
+          "producer": "telosglobal1",
+          "trx_id": "cb10e90f601ee238bd7e585a6ebd9df6d9d567b6c45f067c79ac32e3bbb4ee87",
+          "action_ordinal": 1,
+          "global_sequence": 390042548,
+          "act": {
+            "account": "eosio.evm",
+            "name": "setrevision",
+            "authorization": [
+              {
+                "actor": "eosio.evm",
+                "permission": "active"
+              }
+            ],
+            "data": {
+              "new_revision": 1
+            }
+          }
+        },
+        "native_config_delta": {
+          "present": 1,
+          "code": "eosio.evm",
+          "scope": "eosio.evm",
+          "table": "config",
+          "primary_key": "4982871454518345728",
+          "payer": "eosio.evm",
+          "block_num": 278492369,
+          "block_id": "109974d159d53fe84c2e630aaa806813c0e3e4543dd6cd36ad82069d8a364bbc",
+          "data": {
+            "trx_index": 0,
+            "last_block": 278491827,
+            "gas_used_block": "00000000000000000000000000000000000000000000000000000000000094EE",
+            "gas_price": "000000000000000000000000000000000000000000000000000000754D490126",
+            "revision": 1
+          }
+        },
+        "evm_block": {
+          "number": "0x10997498",
+          "hash": "0x20c2520f51ff55affcadbf03fa7e7ebce97c515e210ee42976b6633a713df53c",
+          "parentHash": "0x26c001604c6892a03cefb21ffcd17ba148985d80184dcc40b99a90c12763f39d",
+          "timestamp": "0x65af0022",
+          "extraData": "0x109974d159d53fe84c2e630aaa806813c0e3e4543dd6cd36ad82069d8a364bbc",
+          "gasLimit": "0x7fffffff",
+          "gasUsed": "0x0",
+          "stateRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+          "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+          "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+          "transactions": []
+        }
+      },
+      "sources": [
+        "GET https://test.telos.eosusa.io/v2/history/get_actions?account=eosio.evm&after=278492369&before=278492369&limit=100&sort=asc",
+        "GET https://test.telos.eosusa.io/v2/history/get_deltas?code=eosio.evm&after=278492369&before=278492369&limit=100",
+        "POST https://rpc.testnet.telos.net/evm eth_getBlockByNumber(0x10997498,false)"
+      ]
+    }
+  ]
+}

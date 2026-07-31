@@ -147,7 +147,9 @@ async fn blob_conversion_at_osaka() -> eyre::Result<()> {
     let runtime = Runtime::test();
 
     let current_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-    // Osaka activates in 2 slots
+    // Osaka activates in 2 slots. The intermediate Prague block below enters the conversion
+    // window at the current wall-clock timestamp so the converter's four-second delay also
+    // satisfies transaction-pool validation for EIP-7594 sidecars.
     let osaka_timestamp = current_timestamp + 24;
 
     let genesis: Genesis = serde_json::from_str(include_str!("../assets/genesis.json")).unwrap();
@@ -178,10 +180,10 @@ async fn blob_conversion_at_osaka() -> eyre::Result<()> {
     let first = wallets.pop().unwrap();
     let second = wallets.pop().unwrap();
 
-    // build a dummy payload at `current_timestamp`
+    // Build a dummy payload one second before `current_timestamp`, outside the conversion window.
     let raw_tx = TransactionTestContext::transfer_tx_bytes(1, wallets.pop().unwrap()).await;
     node.rpc.inject_tx(raw_tx).await?;
-    node.payload.timestamp = current_timestamp - 1;
+    node.payload.timestamp = current_timestamp - 2;
     node.advance_block().await?;
 
     // build blob txs
@@ -213,8 +215,9 @@ async fn blob_conversion_at_osaka() -> eyre::Result<()> {
     // validate sidecar
     TransactionTestContext::validate_sidecar(envelope);
 
-    // build last Prague payload
-    node.payload.timestamp = current_timestamp + 1;
+    // Build a Prague payload exactly two slots before Osaka. Canonicalizing this payload below
+    // starts the background sidecar conversion task deterministically.
+    node.payload.timestamp = current_timestamp - 1;
     let prague_payload = node.new_payload().await?;
     assert!(matches!(prague_payload.sidecars(), BlobSidecars::Eip4844(_)));
 
@@ -227,17 +230,27 @@ async fn blob_conversion_at_osaka() -> eyre::Result<()> {
     // validate sidecar
     TransactionTestContext::validate_sidecar(envelope);
 
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    // Submit the Prague payload to enter the two-slot conversion window.
+    node.update_forkchoice(genesis_hash, node.submit_payload(prague_payload).await?).await?;
 
-    // fetch second blob tx from rpc again
+    // Wait until the background task converts and reinserts the second sidecar. Polling avoids
+    // coupling the assertion to runner scheduling while retaining a hard upper bound.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let sidecar = node.inner.pool.get_blob(blob_tx_hash)?;
+            if node.inner.pool.get(&blob_tx_hash).is_some() &&
+                sidecar.is_some_and(|sidecar| sidecar.is_eip7594())
+            {
+                return Ok::<_, eyre::Report>(())
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await??;
     let envelope = node.rpc.envelope_by_hash(blob_tx_hash).await?;
-    // assert that it was converted to eip7594
     assert!(envelope.as_eip4844().unwrap().tx().sidecar().unwrap().is_eip7594());
     // validate sidecar
     TransactionTestContext::validate_sidecar(envelope);
-
-    // submit the Prague payload
-    node.update_forkchoice(genesis_hash, node.submit_payload(prague_payload).await?).await?;
 
     // Build first Osaka payload
     node.payload.timestamp = osaka_timestamp - 1;

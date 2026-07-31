@@ -618,7 +618,13 @@ where
             }
         }
 
-        let result = executor.apply_post_execution_changes()?;
+        let mut result = executor.apply_post_execution_changes()?;
+
+        self.strategy_factory.reconcile_block_execution(
+            block.sealed_block(),
+            &mut self.db,
+            &mut result,
+        )?;
 
         self.db.merge_transitions(BundleRetention::Reverts);
 
@@ -633,15 +639,50 @@ where
     where
         H: OnStateHook + 'static,
     {
-        let mut executor = self
-            .strategy_factory
-            .executor_for_block(&mut self.db, block)
-            .map_err(BlockExecutionError::other)?;
+        let mut result = {
+            let mut executor = self
+                .strategy_factory
+                .executor_for_block(&mut self.db, block)
+                .map_err(BlockExecutionError::other)?;
 
-        executor.evm_mut().db_mut().set_state_hook(Some(Box::new(state_hook)));
+            executor.evm_mut().db_mut().set_state_hook(Some(Box::new(state_hook)));
 
-        let result = executor.execute_block(block.transactions_recovered());
+            let has_bal = block.header().block_access_list_hash().is_some();
+            if has_bal {
+                executor.evm_mut().db_mut().bal_state.bal_builder = Some(Bal::new());
+            } else {
+                executor.evm_mut().db_mut().bal_state.bal_builder = None;
+            }
 
+            let mut result = executor.apply_pre_execution_changes();
+            if result.is_ok() && has_bal {
+                executor.evm_mut().db_mut().bump_bal_index();
+            }
+            if result.is_ok() {
+                for tx in block.transactions_recovered() {
+                    if let Err(error) = executor.execute_transaction(tx) {
+                        result = Err(error);
+                        break
+                    }
+                    if has_bal {
+                        executor.evm_mut().db_mut().bump_bal_index();
+                    }
+                }
+            }
+            match result {
+                Ok(()) => executor.apply_post_execution_changes(),
+                Err(error) => Err(error),
+            }
+        };
+
+        let reconciliation_error = result.as_mut().ok().and_then(|execution_result| {
+            self.strategy_factory
+                .reconcile_block_execution(block.sealed_block(), &mut self.db, execution_result)
+                .err()
+        });
+        if let Some(error) = reconciliation_error {
+            result = Err(error);
+        }
         self.db.set_state_hook(None);
         self.db.merge_transitions(BundleRetention::Reverts);
 

@@ -1,0 +1,356 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+[[ $# -eq 2 ]] || {
+    echo "usage: $0 INSTANCE JWT_CREDENTIAL" >&2
+    exit 2
+}
+
+instance=$1
+jwt_file=$2
+config=/etc/telos-reth/${instance}/node.env
+state_root=/var/lib/telos-reth-health
+state_dir=${state_root}/${instance}
+metrics_dir=${state_root}/metrics
+metrics_file=${metrics_dir}/telos_reth_${instance}.prom
+lock_file=${state_dir}/check.lock
+progress_file=${state_dir}/finalized-progress
+last_success_file=${state_dir}/last-success
+engine_curl_config=${state_dir}/engine-curl.conf
+
+[[ $instance =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || {
+    echo "invalid instance name" >&2
+    exit 2
+}
+mkdir -p "$state_dir" "$metrics_dir"
+[[ -d $state_dir && ! -L $state_dir && $(realpath -e "$state_dir") == "$state_dir" &&
+   $(stat -c '%U:%G %a' "$state_dir") == 'telos-monitor:telos-monitor 700' ]] || {
+    echo "unsafe readiness state directory" >&2
+    exit 1
+}
+[[ -d $metrics_dir && ! -L $metrics_dir && $(realpath -e "$metrics_dir") == "$metrics_dir" &&
+   $(stat -c '%U:%G' "$metrics_dir") == telos-monitor:telos-monitor ]] || {
+    echo "unsafe readiness metrics directory" >&2
+    exit 1
+}
+exec 9>"$lock_file"
+flock -w 10 9 || {
+    echo "telos-reth readiness [$instance]: another check did not finish within 10s" >&2
+    exit 1
+}
+
+success=0
+stage=startup
+local_finalized_number=0
+reference_finalized_number=0
+finalized_lag=0
+stalled_seconds=0
+nodeos_head_age=0
+engine_authenticated=0
+parity_match=0
+nodeos_healthy=0
+companion_compatible=0
+chain_id_match=0
+now=$(date +%s)
+
+emit_metrics() {
+    local status=$1 last_success=0 tmp
+    [[ -r $last_success_file ]] && read -r last_success < "$last_success_file"
+    tmp=$(mktemp "${metrics_dir}/.telos_reth_${instance}.XXXXXX")
+    {
+        echo '# HELP telos_reth_readiness Whether every fail-closed readiness gate passed.'
+        echo '# TYPE telos_reth_readiness gauge'
+        printf 'telos_reth_readiness{network="%s"} %s\n' "$instance" "$status"
+        echo '# HELP telos_reth_readiness_last_check_timestamp_seconds Unix time of the last completed check.'
+        echo '# TYPE telos_reth_readiness_last_check_timestamp_seconds gauge'
+        printf 'telos_reth_readiness_last_check_timestamp_seconds{network="%s"} %s\n' "$instance" "$now"
+        echo '# HELP telos_reth_readiness_last_success_timestamp_seconds Unix time of the last successful check.'
+        echo '# TYPE telos_reth_readiness_last_success_timestamp_seconds gauge'
+        printf 'telos_reth_readiness_last_success_timestamp_seconds{network="%s"} %s\n' "$instance" "$last_success"
+        echo '# HELP telos_reth_engine_authenticated Engine API accepted a short-lived JWT.'
+        echo '# TYPE telos_reth_engine_authenticated gauge'
+        printf 'telos_reth_engine_authenticated{network="%s"} %s\n' "$instance" "$engine_authenticated"
+        echo '# HELP telos_reth_chain_id_match Local EVM, reference EVM, and configured chain IDs agree.'
+        echo '# TYPE telos_reth_chain_id_match gauge'
+        printf 'telos_reth_chain_id_match{network="%s"} %s\n' "$instance" "$chain_id_match"
+        echo '# HELP telos_reth_finalized_parity_match Sampled finalized hashes agree with the reference.'
+        echo '# TYPE telos_reth_finalized_parity_match gauge'
+        printf 'telos_reth_finalized_parity_match{network="%s"} %s\n' "$instance" "$parity_match"
+        echo '# HELP telos_reth_nodeos_healthy Native chain ID, freshness, and LIB checks passed.'
+        echo '# TYPE telos_reth_nodeos_healthy gauge'
+        printf 'telos_reth_nodeos_healthy{network="%s"} %s\n' "$instance" "$nodeos_healthy"
+        echo '# HELP telos_reth_companion_compatible Running consensus companion version matches the pinned deployment.'
+        echo '# TYPE telos_reth_companion_compatible gauge'
+        printf 'telos_reth_companion_compatible{network="%s"} %s\n' "$instance" "$companion_compatible"
+        echo '# HELP telos_reth_local_finalized_block Local finalized EVM block number.'
+        echo '# TYPE telos_reth_local_finalized_block gauge'
+        printf 'telos_reth_local_finalized_block{network="%s"} %s\n' "$instance" "$local_finalized_number"
+        echo '# HELP telos_reth_reference_finalized_block Reference finalized EVM block number.'
+        echo '# TYPE telos_reth_reference_finalized_block gauge'
+        printf 'telos_reth_reference_finalized_block{network="%s"} %s\n' "$instance" "$reference_finalized_number"
+        echo '# HELP telos_reth_finalized_lag_blocks Reference finalized height minus local finalized height.'
+        echo '# TYPE telos_reth_finalized_lag_blocks gauge'
+        printf 'telos_reth_finalized_lag_blocks{network="%s"} %s\n' "$instance" "$finalized_lag"
+        echo '# HELP telos_reth_finalized_stalled_seconds Seconds since the local finalized height changed.'
+        echo '# TYPE telos_reth_finalized_stalled_seconds gauge'
+        printf 'telos_reth_finalized_stalled_seconds{network="%s"} %s\n' "$instance" "$stalled_seconds"
+        echo '# HELP telos_reth_nodeos_head_age_seconds Age of the native chain head timestamp.'
+        echo '# TYPE telos_reth_nodeos_head_age_seconds gauge'
+        printf 'telos_reth_nodeos_head_age_seconds{network="%s"} %s\n' "$instance" "$nodeos_head_age"
+        echo '# HELP telos_reth_readiness_failure Readiness failure stage (one fixed-cardinality label).'
+        echo '# TYPE telos_reth_readiness_failure gauge'
+        printf 'telos_reth_readiness_failure{network="%s",stage="%s"} %s\n' "$instance" "$stage" "$((1 - status))"
+    } > "$tmp"
+    chmod 0644 "$tmp"
+    mv -f "$tmp" "$metrics_file"
+}
+
+finish() {
+    local rc=$?
+    trap - EXIT
+    rm -f "$engine_curl_config"
+    if (( success == 1 )); then
+        printf '%s\n' "$now" > "${last_success_file}.tmp"
+        mv -f "${last_success_file}.tmp" "$last_success_file"
+        emit_metrics 1
+    else
+        emit_metrics 0
+    fi
+    exit "$rc"
+}
+trap finish EXIT
+
+die() {
+    echo "telos-reth readiness [$instance] ($stage): $*" >&2
+    exit 1
+}
+
+[[ -f $config && ! -L $config && -r $config ]] || die "missing or unreadable $config"
+[[ $(realpath -e "$config") == "$config" ]] || die "$config must use its canonical path"
+[[ $(stat -c '%U:%G %a' "$(dirname "$config")") == 'root:telos-reth-config 750' ]] ||
+    die "the instance configuration directory must be root:telos-reth-config mode 0750"
+[[ $(stat -c '%U:%G' "$config") == root:telos-reth-config && $(stat -c '%a' "$config") == 440 ]] ||
+    die "$config must be root:telos-reth-config mode 0440"
+# shellcheck disable=SC1090
+source "$config"
+for name in CHAIN_ID CHECKPOINT_MANIFEST CHECKPOINT_MANIFEST_SHA256 HTTP_PORT AUTHRPC_PORT \
+    REFERENCE_RPC_URL TELOS_ENDPOINT NODEOS_URL NODEOS_CHAIN_ID CONSENSUS_UNIT CONSENSUS_BINARY \
+    CONSENSUS_CONFIG CONSENSUS_VERSION CONSENSUS_SHA256 MAX_HEAD_LAG_BLOCKS \
+    MAX_FINALIZED_STALL_SECONDS MAX_NODEOS_HEAD_AGE_SECONDS PARITY_DEPTHS \
+    EXECUTION_ANCHOR_BLOCK_NUMBER EXECUTION_ANCHOR_BLOCK_HASH; do
+    [[ -n ${!name:-} ]] || die "$name is not configured"
+done
+
+rpc_call() {
+    local url=$1 method=$2 params=$3 auth_config=${4:-} payload response
+    payload=$(jq -cn --arg method "$method" --argjson params "$params" \
+        '{jsonrpc:"2.0",id:1,method:$method,params:$params}')
+    response=$(mktemp "${state_dir}/rpc.XXXXXX")
+    if [[ -n $auth_config ]]; then
+        curl --silent --show-error --fail-with-body --connect-timeout 3 --max-time 8 \
+            --config "$auth_config" --header 'Content-Type: application/json' \
+            --data "$payload" --output "$response" "$url" || {
+                rm -f "$response"
+                return 1
+            }
+    else
+        curl --silent --show-error --fail-with-body --connect-timeout 3 --max-time 8 \
+            --header 'Content-Type: application/json' --data "$payload" \
+            --output "$response" "$url" || {
+                rm -f "$response"
+                return 1
+            }
+    fi
+    jq -e 'type == "object" and .jsonrpc == "2.0" and has("result") and (has("error") | not)' \
+        "$response" >/dev/null || {
+            rm -f "$response"
+            return 1
+        }
+    jq -c '.result' "$response"
+    rm -f "$response"
+}
+
+hex_to_decimal() {
+    python3 - "$1" <<'PY'
+import sys
+value = sys.argv[1]
+if not value.startswith("0x"):
+    raise SystemExit(1)
+print(int(value, 16))
+PY
+}
+
+stage=service
+systemctl is-active --quiet "telos-reth@${instance}.service" || die "execution service is not active"
+systemctl is-active --quiet "$CONSENSUS_UNIT" || die "consensus service is not active"
+[[ $CONSENSUS_BINARY == /usr/local/bin/telos-consensus-client ]] ||
+    die "consensus binary must use the managed release link"
+[[ ${TELOS_ENDPOINT%/} == "${NODEOS_URL%/}" ]] ||
+    die "TELOS_ENDPOINT and NODEOS_URL do not identify the same native endpoint"
+[[ $CHECKPOINT_MANIFEST == /* && -f $CHECKPOINT_MANIFEST && ! -L $CHECKPOINT_MANIFEST ]] ||
+    die "checkpoint manifest is not a regular absolute file"
+[[ $(stat -c '%U:%G %a' "$CHECKPOINT_MANIFEST") == 'root:telos-reth-config 440' ]] ||
+    die "checkpoint manifest ownership or mode changed"
+[[ $CHECKPOINT_MANIFEST_SHA256 =~ ^[[:xdigit:]]{64}$ ]] ||
+    die "checkpoint manifest deployment pin is malformed"
+actual_checkpoint_manifest_sha256=$(sha256sum "$CHECKPOINT_MANIFEST" | awk '{print $1}')
+[[ ${actual_checkpoint_manifest_sha256,,} == ${CHECKPOINT_MANIFEST_SHA256,,} ]] ||
+    die "checkpoint manifest digest differs from the approved deployment"
+[[ $CONSENSUS_SHA256 =~ ^[[:xdigit:]]{64}$ ]] || die "consensus digest pin is malformed"
+consensus_binary=$(readlink -f "$CONSENSUS_BINARY")
+[[ -x $consensus_binary && -f $consensus_binary ]] || die "consensus binary is unavailable"
+[[ $(stat -c '%U' "$consensus_binary") == root ]] || die "consensus binary is not root-owned"
+consensus_binary_mode=$(stat -c '%a' "$consensus_binary")
+(( (8#$consensus_binary_mode & 8#022) == 0 )) ||
+    die "consensus binary is group/world writable"
+actual_consensus_sha256=$(sha256sum "$consensus_binary" | awk '{print $1}')
+[[ ${actual_consensus_sha256,,} == ${CONSENSUS_SHA256,,} ]] ||
+    die "running consensus binary digest is not the approved digest"
+actual_consensus_version=$($CONSENSUS_BINARY --version | head -n 1) || die "consensus binary version probe failed"
+[[ $actual_consensus_version == "$CONSENSUS_VERSION" ]] || die "consensus companion version is not pinned version"
+/usr/local/libexec/telos-reth-consensus-binding \
+    "$CONSENSUS_UNIT" "$CONSENSUS_BINARY" "$CONSENSUS_CONFIG" \
+    "/var/lib/telos-consensus/${instance}" "$CHAIN_ID" "$AUTHRPC_PORT" "$NODEOS_URL" \
+    "$EXECUTION_ANCHOR_BLOCK_NUMBER" "$EXECUTION_ANCHOR_BLOCK_HASH" "$instance" \
+    "$CHECKPOINT_MANIFEST"
+companion_compatible=1
+
+stage=engine_auth
+[[ -r $jwt_file ]] || die "JWT credential is unreadable"
+jwt_token=$(python3 - "$jwt_file" <<'PY'
+import base64
+import hashlib
+import hmac
+import json
+import pathlib
+import sys
+import time
+
+secret = bytes.fromhex(pathlib.Path(sys.argv[1]).read_text().strip())
+encode = lambda value: base64.urlsafe_b64encode(value).rstrip(b"=")
+header = encode(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode())
+payload = encode(json.dumps({"iat": int(time.time())}, separators=(",", ":")).encode())
+message = header + b"." + payload
+signature = encode(hmac.new(secret, message, hashlib.sha256).digest())
+print((message + b"." + signature).decode())
+PY
+)
+printf 'header = "Authorization: Bearer %s"\n' "$jwt_token" > "$engine_curl_config"
+chmod 0600 "$engine_curl_config"
+engine_url=http://127.0.0.1:${AUTHRPC_PORT}
+capabilities=$(rpc_call "$engine_url" engine_exchangeCapabilities \
+    '[["engine_forkchoiceUpdatedV1","engine_newPayloadV1"]]' "$engine_curl_config") ||
+    die "authenticated Engine API probe failed"
+jq -e 'type == "array" and length == 2 and
+       (sort == ["engine_forkchoiceUpdatedV1","engine_newPayloadV1"])' \
+    <<< "$capabilities" >/dev/null || die "Engine capabilities are not the exact Telos V1 surface"
+engine_authenticated=1
+unset jwt_token
+
+stage=chain_id
+local_chain_hex=$(rpc_call "http://127.0.0.1:${HTTP_PORT}" eth_chainId '[]') || die "local eth_chainId failed"
+reference_chain_hex=$(rpc_call "$REFERENCE_RPC_URL" eth_chainId '[]') || die "reference eth_chainId failed"
+local_chain=$(hex_to_decimal "$(jq -r . <<< "$local_chain_hex")") || die "local chain ID is malformed"
+reference_chain=$(hex_to_decimal "$(jq -r . <<< "$reference_chain_hex")") || die "reference chain ID is malformed"
+[[ $local_chain == "$CHAIN_ID" && $reference_chain == "$CHAIN_ID" ]] ||
+    die "chain ID mismatch (configured=$CHAIN_ID local=$local_chain reference=$reference_chain)"
+chain_id_match=1
+
+stage=anchor
+[[ $EXECUTION_ANCHOR_BLOCK_NUMBER =~ ^[1-9][0-9]*$ ]] || die "configured anchor height is malformed"
+[[ ${EXECUTION_ANCHOR_BLOCK_HASH,,} =~ ^0x[[:xdigit:]]{64}$ ]] || die "configured anchor hash is malformed"
+anchor_height_hex=$(printf '0x%x' "$EXECUTION_ANCHOR_BLOCK_NUMBER")
+local_anchor=$(rpc_call "http://127.0.0.1:${HTTP_PORT}" eth_getBlockByNumber \
+    "[\"${anchor_height_hex}\",false]") || die "local execution anchor query failed"
+reference_anchor=$(rpc_call "$REFERENCE_RPC_URL" eth_getBlockByNumber \
+    "[\"${anchor_height_hex}\",false]") || die "reference execution anchor query failed"
+local_anchor_hash=$(jq -er '.hash' <<< "$local_anchor") || die "local execution anchor is unavailable"
+reference_anchor_hash=$(jq -er '.hash' <<< "$reference_anchor") || die "reference execution anchor is unavailable"
+[[ ${local_anchor_hash,,} == ${EXECUTION_ANCHOR_BLOCK_HASH,,} &&
+   ${reference_anchor_hash,,} == ${EXECUTION_ANCHOR_BLOCK_HASH,,} ]] ||
+    die "local, reference, and configured execution anchors do not match"
+
+stage=nodeos
+nodeos_response=$(mktemp "${state_dir}/nodeos.XXXXXX")
+curl --silent --show-error --fail-with-body --connect-timeout 3 --max-time 8 \
+    --header 'Content-Type: application/json' --data '{}' \
+    --output "$nodeos_response" "${NODEOS_URL%/}/v1/chain/get_info" || die "nodeos get_info failed"
+nodeos_chain=$(jq -er '.chain_id' "$nodeos_response") || die "nodeos chain ID is missing"
+[[ ${nodeos_chain,,} == ${NODEOS_CHAIN_ID,,} ]] || die "nodeos chain ID does not match configuration"
+nodeos_lib=$(jq -er '.last_irreversible_block_num | numbers' "$nodeos_response") || die "nodeos LIB is missing"
+(( nodeos_lib > 0 )) || die "nodeos has not established an irreversible block"
+nodeos_head_time=$(jq -er '.head_block_time' "$nodeos_response") || die "nodeos head time is missing"
+nodeos_head_epoch=$(python3 - "$nodeos_head_time" <<'PY'
+from datetime import datetime, timezone
+import sys
+value = sys.argv[1]
+if value.endswith("Z"):
+    value = value[:-1] + "+00:00"
+parsed = datetime.fromisoformat(value)
+if parsed.tzinfo is None:
+    parsed = parsed.replace(tzinfo=timezone.utc)
+print(int(parsed.timestamp()))
+PY
+) || die "nodeos head time is malformed"
+rm -f "$nodeos_response"
+nodeos_head_age=$((now - nodeos_head_epoch))
+(( nodeos_head_age >= 0 && nodeos_head_age <= MAX_NODEOS_HEAD_AGE_SECONDS )) ||
+    die "nodeos head is ${nodeos_head_age}s old"
+nodeos_healthy=1
+
+stage=finality
+local_finalized=$(rpc_call "http://127.0.0.1:${HTTP_PORT}" eth_getBlockByNumber '["finalized",false]') ||
+    die "local finalized block query failed"
+reference_finalized=$(rpc_call "$REFERENCE_RPC_URL" eth_getBlockByNumber '["finalized",false]') ||
+    die "reference finalized block query failed"
+local_finalized_hex=$(jq -er '.number' <<< "$local_finalized") || die "local finalized block is unavailable"
+reference_finalized_hex=$(jq -er '.number' <<< "$reference_finalized") || die "reference finalized block is unavailable"
+local_finalized_number=$(hex_to_decimal "$local_finalized_hex") || die "local finalized height is malformed"
+reference_finalized_number=$(hex_to_decimal "$reference_finalized_hex") || die "reference finalized height is malformed"
+finalized_lag=$((reference_finalized_number - local_finalized_number))
+(( finalized_lag <= MAX_HEAD_LAG_BLOCKS && finalized_lag >= -MAX_HEAD_LAG_BLOCKS )) ||
+    die "finalized lag $finalized_lag exceeds +/-$MAX_HEAD_LAG_BLOCKS blocks"
+
+if [[ -r $progress_file ]]; then
+    read -r previous_height previous_change < "$progress_file" || die "progress state is malformed"
+    [[ $previous_height =~ ^[0-9]+$ && $previous_change =~ ^[0-9]+$ ]] ||
+        die "progress state is malformed"
+else
+    previous_height=-1
+    previous_change=$now
+fi
+if (( local_finalized_number != previous_height )); then
+    previous_change=$now
+    printf '%s %s\n' "$local_finalized_number" "$previous_change" > "${progress_file}.tmp"
+    mv -f "${progress_file}.tmp" "$progress_file"
+fi
+stalled_seconds=$((now - previous_change))
+(( stalled_seconds <= MAX_FINALIZED_STALL_SECONDS )) ||
+    die "local finalized height has not changed for ${stalled_seconds}s"
+
+stage=parity
+common_height=$local_finalized_number
+(( reference_finalized_number < common_height )) && common_height=$reference_finalized_number
+IFS=',' read -r -a depths <<< "$PARITY_DEPTHS"
+(( ${#depths[@]} > 0 )) || die "PARITY_DEPTHS is empty"
+for depth in "${depths[@]}"; do
+    [[ $depth =~ ^[0-9]+$ ]] || die "invalid parity depth: $depth"
+    height=$((common_height - depth))
+    (( height >= EXECUTION_ANCHOR_BLOCK_NUMBER )) ||
+        die "not enough post-anchor finalized history for parity depth $depth"
+    height_hex=$(printf '0x%x' "$height")
+    local_block=$(rpc_call "http://127.0.0.1:${HTTP_PORT}" eth_getBlockByNumber "[\"${height_hex}\",false]") ||
+        die "local parity query failed at block $height"
+    reference_block=$(rpc_call "$REFERENCE_RPC_URL" eth_getBlockByNumber "[\"${height_hex}\",false]") ||
+        die "reference parity query failed at block $height"
+    local_hash=$(jq -er '.hash' <<< "$local_block") || die "local block $height has no hash"
+    reference_hash=$(jq -er '.hash' <<< "$reference_block") || die "reference block $height has no hash"
+    [[ ${local_hash,,} == ${reference_hash,,} ]] ||
+        die "canonical mismatch at block $height (local=$local_hash reference=$reference_hash)"
+done
+parity_match=1
+
+stage=ready
+success=1
+echo "telos-reth readiness [$instance]: ready at finalized block $local_finalized_number" >&2
