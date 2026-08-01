@@ -1625,7 +1625,12 @@ pub async fn readiness(
         history_probe_hash,
         history_probe_number,
     )?;
-    response_empty_array(archive_history_logs?, "archive", "history logs")?;
+    response_logs_at_block(
+        archive_history_logs?,
+        "archive",
+        history_probe_number,
+        history_probe_address,
+    )?;
     response_expected_quantity(
         routed_history_balance,
         "router",
@@ -1778,20 +1783,33 @@ fn response_receipt_identity(
     Ok(())
 }
 
-fn response_empty_array(
+fn response_logs_at_block(
     response: Option<Value>,
     backend: &'static str,
-    field: &'static str,
+    expected_block: u64,
+    expected_address: &str,
 ) -> Result<(), RouterError> {
     let response = response.ok_or_else(|| missing_response(backend))?;
-    let result = response.get("result").and_then(Value::as_array).ok_or_else(|| {
-        RouterError::Backend { backend, message: format!("{field} response is not an array") }
-    })?;
-    if !result.is_empty() {
-        return Err(RouterError::Backend {
+    let result =
+        response.get("result").and_then(Value::as_array).ok_or_else(|| RouterError::Backend {
             backend,
-            message: format!("{field} response is not empty"),
-        })
+            message: "history logs response is not an array".to_owned(),
+        })?;
+    validate_log_range(result, Some(expected_block), Some(expected_block), backend)?;
+    for log in result {
+        let address = log.get("address").and_then(Value::as_str).ok_or_else(|| {
+            RouterError::Backend { backend, message: "history log has no address".to_owned() }
+        })?;
+        parse_address(address).map_err(|_| RouterError::Backend {
+            backend,
+            message: "history log has an invalid address".to_owned(),
+        })?;
+        if !address.eq_ignore_ascii_case(expected_address) {
+            return Err(RouterError::Backend {
+                backend,
+                message: "history log address does not match the configured probe".to_owned(),
+            })
+        }
     }
     Ok(())
 }
@@ -3394,7 +3412,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn readiness_proves_pre_savanna_balance_receipt_and_empty_logs() {
+    async fn readiness_proves_history_balance_receipt_and_filtered_logs() {
         let anchor_hash = format!("0x{}", "aa".repeat(32));
         let history_hash = format!("0x{}", "bb".repeat(32));
         let transaction_hash = format!("0x{}", "cc".repeat(32));
@@ -3435,6 +3453,7 @@ mod tests {
             let anchor_hash = anchor_hash.clone();
             let history_hash = history_hash.clone();
             let transaction_hash = transaction_hash.clone();
+            let address = address.clone();
             let storage_address = storage_address.clone();
             let storage_value = storage_value.clone();
             let common_hash = common_hash.clone();
@@ -3442,6 +3461,7 @@ mod tests {
                 let anchor_hash = anchor_hash.clone();
                 let history_hash = history_hash.clone();
                 let transaction_hash = transaction_hash.clone();
+                let address = address.clone();
                 let storage_address = storage_address.clone();
                 let storage_value = storage_value.clone();
                 let common_hash = common_hash.clone();
@@ -3481,9 +3501,11 @@ mod tests {
                                 "blockNumber": "0x3e7",
                             },
                         }),
-                        "history-logs" => {
-                            json!({"jsonrpc": "2.0", "id": id, "result": []})
-                        }
+                        "history-logs" => json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": [{"blockNumber": "0x3e7", "address": address}],
+                        }),
                         "telos-router-storage-0" => {
                             assert_eq!(request["method"], "eth_getStorageAt");
                             assert_eq!(request["params"][0], storage_address);
