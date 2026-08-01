@@ -437,10 +437,19 @@ impl RpcRouter {
                     .then(|| error_response(response_id, INVALID_PARAMS, message))
             }
         };
+        let restores_legacy_block_fields = is_block_object_method(method);
         let result = self.execute(plan, request, expects_response, &budget).await;
         match result {
             Ok(None) => None,
-            Ok(Some(response)) => Some(response),
+            Ok(Some(mut response)) => {
+                if restores_legacy_block_fields &&
+                    let Err(error) = restore_legacy_block_fields(&mut response)
+                {
+                    return expects_response
+                        .then(|| error_response(response_id, ROUTER_ERROR, error.to_string()))
+                }
+                Some(response)
+            }
             Err(error) => expects_response
                 .then(|| error_response(response_id, ROUTER_ERROR, error.to_string())),
         }
@@ -800,6 +809,42 @@ fn copied_backend_error(
 
 fn has_null_result(response: &Value) -> bool {
     response.get("result").is_some_and(Value::is_null)
+}
+
+fn is_block_object_method(method: &str) -> bool {
+    matches!(
+        method,
+        "eth_getBlockByNumber" |
+            "eth_getBlockByHash" |
+            "eth_getHeaderByNumber" |
+            "eth_getHeaderByHash" |
+            "eth_getUncleByBlockNumberAndIndex" |
+            "eth_getUncleByBlockHashAndIndex"
+    )
+}
+
+fn restore_legacy_block_fields(response: &mut Value) -> Result<(), RouterError> {
+    let Some(result) = response.get_mut("result") else { return Ok(()) };
+    if result.is_null() {
+        return Ok(())
+    }
+    let block = result.as_object_mut().ok_or_else(|| RouterError::Backend {
+        backend: "router",
+        message: "block response is not an object".to_owned(),
+    })?;
+    if block.contains_key("totalDifficulty") {
+        return Ok(())
+    }
+    let Some(difficulty) = block.get("difficulty").and_then(Value::as_str) else { return Ok(()) };
+    if parse_quantity(difficulty) != Ok(0) {
+        return Err(RouterError::Backend {
+            backend: "router",
+            message: "cannot restore totalDifficulty for a nonzero or invalid difficulty"
+                .to_owned(),
+        })
+    }
+    block.insert("totalDifficulty".to_owned(), Value::String("0x0".to_owned()));
+    Ok(())
 }
 
 fn block_probe_is_absent(response: &Value, expected_hash: &str) -> Result<bool, RouterError> {
@@ -3599,5 +3644,23 @@ mod tests {
             LIVE_START - 1,
         )
         .is_err());
+    }
+
+    #[test]
+    fn restores_legacy_total_difficulty_only_for_zero_difficulty_blocks() {
+        let mut response = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"hash": format!("0x{}", "11".repeat(32)), "difficulty": "0x0"},
+        });
+        restore_legacy_block_fields(&mut response).unwrap();
+        assert_eq!(response["result"]["totalDifficulty"], "0x0");
+
+        let mut invalid = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"hash": format!("0x{}", "22".repeat(32)), "difficulty": "0x1"},
+        });
+        assert!(restore_legacy_block_fields(&mut invalid).is_err());
     }
 }
