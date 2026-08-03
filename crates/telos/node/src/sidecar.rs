@@ -1125,7 +1125,7 @@ impl<F: DatabaseProviderFactory> TelosSidecarStore for ProviderTelosSidecarStore
             safe_block_hash,
             finalized_block_hash,
         )?;
-        provider.commit().map_err(provider_error)
+        commit_mdbx_only(provider)
     }
 
     fn validate_and_mark_dispatched(
@@ -1140,7 +1140,7 @@ impl<F: DatabaseProviderFactory> TelosSidecarStore for ProviderTelosSidecarStore
             anchor,
             sidecar,
         )?;
-        provider.commit().map_err(provider_error)?;
+        commit_mdbx_only(provider)?;
         Ok(outcome)
     }
 
@@ -1150,7 +1150,7 @@ impl<F: DatabaseProviderFactory> TelosSidecarStore for ProviderTelosSidecarStore
     ) -> Result<TelosSidecarPutOutcome, TelosSidecarError> {
         let provider = self.factory.database_provider_rw().map_err(provider_error)?;
         let outcome = put_pending_with_transaction(provider.tx_ref(), self.chain, sidecar)?;
-        provider.commit().map_err(provider_error)?;
+        commit_mdbx_only(provider)?;
         Ok(outcome)
     }
 
@@ -1162,7 +1162,7 @@ impl<F: DatabaseProviderFactory> TelosSidecarStore for ProviderTelosSidecarStore
         let provider = self.factory.database_provider_rw().map_err(provider_error)?;
         let outcome =
             mark_dispatched_with_transaction(provider.tx_ref(), self.chain, block_hash, digest)?;
-        provider.commit().map_err(provider_error)?;
+        commit_mdbx_only(provider)?;
         Ok(outcome)
     }
 
@@ -1174,7 +1174,7 @@ impl<F: DatabaseProviderFactory> TelosSidecarStore for ProviderTelosSidecarStore
         let provider = self.factory.database_provider_rw().map_err(provider_error)?;
         let outcome =
             mark_accepted_with_transaction(provider.tx_ref(), self.chain, block_hash, digest)?;
-        provider.commit().map_err(provider_error)?;
+        commit_mdbx_only(provider)?;
         Ok(outcome)
     }
 
@@ -1186,7 +1186,7 @@ impl<F: DatabaseProviderFactory> TelosSidecarStore for ProviderTelosSidecarStore
         let provider = self.factory.database_provider_rw().map_err(provider_error)?;
         let outcome =
             remove_pending_with_transaction(provider.tx_ref(), self.chain, block_hash, digest)?;
-        provider.commit().map_err(provider_error)?;
+        commit_mdbx_only(provider)?;
         Ok(outcome)
     }
 
@@ -1203,14 +1203,14 @@ impl<F: DatabaseProviderFactory> TelosSidecarStore for ProviderTelosSidecarStore
             anchor,
             finalized_hash,
         )?;
-        provider.commit().map_err(provider_error)?;
+        commit_mdbx_only(provider)?;
         Ok(outcome)
     }
 
     fn finalized_coverage(&self) -> Result<Option<TelosFinalizedCoverage>, TelosSidecarError> {
         let provider = self.factory.database_provider_ro().map_err(provider_error)?;
         let marker = finalized_coverage_from_transaction(provider.tx_ref())?;
-        provider.commit().map_err(provider_error)?;
+        commit_mdbx_only(provider)?;
         Ok(marker)
     }
 
@@ -1221,7 +1221,7 @@ impl<F: DatabaseProviderFactory> TelosSidecarStore for ProviderTelosSidecarStore
         let provider = self.factory.database_provider_ro().map_err(provider_error)?;
         let sidecar =
             get_record_by_hash_from_transaction(provider.tx_ref(), self.chain, block_hash)?;
-        provider.commit().map_err(provider_error)?;
+        commit_mdbx_only(provider)?;
         Ok(sidecar)
     }
 
@@ -1232,7 +1232,7 @@ impl<F: DatabaseProviderFactory> TelosSidecarStore for ProviderTelosSidecarStore
         let provider = self.factory.database_provider_ro().map_err(provider_error)?;
         let sidecars =
             get_records_by_number_from_transaction(provider.tx_ref(), self.chain, block_number)?;
-        provider.commit().map_err(provider_error)?;
+        commit_mdbx_only(provider)?;
         Ok(sidecars)
     }
 }
@@ -3609,6 +3609,15 @@ fn database_error(error: DatabaseError) -> TelosSidecarError {
 
 fn provider_error(error: reth_provider::ProviderError) -> TelosSidecarError {
     TelosSidecarError::Database(error.to_string())
+}
+
+/// Commits only the MDBX transaction used by sidecar tables.
+///
+/// Sidecar operations do not mutate static files or RocksDB. Committing the full provider would
+/// finalize static-file writers and can fail while Reth has a prune queued; closing the underlying
+/// database transaction is sufficient and keeps sidecar access independent of pruning.
+fn commit_mdbx_only<P: DBProvider>(provider: P) -> Result<(), TelosSidecarError> {
+    provider.into_tx().commit().map_err(database_error)
 }
 
 impl fmt::Display for TelosSidecarPutOutcome {

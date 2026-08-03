@@ -929,11 +929,17 @@ where
 
         self.block_gas_limit.store(new_tip_block.gas_limit(), std::sync::atomic::Ordering::Relaxed);
 
-        // Get EVM limits from evm_config.evm_env()
-        let evm_env = self
-            .evm_config
-            .evm_env(new_tip_block)
-            .expect("evm_env should not fail for executed block");
+        // Get EVM limits from evm_config.evm_env(). A custom EVM configuration may need to read
+        // auxiliary durable state, so a transient storage error must not take down the txpool
+        // maintenance task. The next canonical head retries the refresh while the last known
+        // limits remain in force.
+        let evm_env = match self.evm_config.evm_env(new_tip_block) {
+            Ok(evm_env) => evm_env,
+            Err(error) => {
+                tracing::warn!(?error, "failed to refresh transaction-pool EVM limits");
+                return
+            }
+        };
 
         self.fork_tracker
             .max_initcode_size
