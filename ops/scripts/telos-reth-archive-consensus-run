@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+die() {
+    echo "telos-reth archive consensus: $*" >&2
+    exit 1
+}
+
+[[ $# -eq 2 ]] || die "usage: $0 INSTANCE JWT_CREDENTIAL"
+instance=$1
+jwt=$2
+[[ $instance =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || die "invalid instance name"
+[[ ${ARCHIVE_CONSENSUS_BINARY:-} =~ ^/usr/local/lib/telos-reth-archive-consensus/releases/[0-9A-Za-z._+-]+/telos-consensus-client$ ]] ||
+    die "archive companion binary path differs"
+[[ -x $ARCHIVE_CONSENSUS_BINARY ]] || die "archive companion binary is unavailable"
+[[ ${ARCHIVE_CONSENSUS_BINARY_SHA256:-} =~ ^[0-9a-f]{64}$ ]] ||
+    die "archive companion digest is malformed"
+[[ $(sha256sum "$ARCHIVE_CONSENSUS_BINARY" | cut -d ' ' -f 1) == \
+    "$ARCHIVE_CONSENSUS_BINARY_SHA256" ]] || die "archive companion digest differs"
+[[ ${ARCHIVE_CONSENSUS_CONFIG:-} == "/etc/telos-reth/${instance}/archive-consensus.toml" ]] ||
+    die "archive companion config path differs"
+[[ -f $ARCHIVE_CONSENSUS_CONFIG && ! -L $ARCHIVE_CONSENSUS_CONFIG ]] ||
+    die "archive companion config is unavailable"
+[[ $(stat -c '%U:%G:%a' "$ARCHIVE_CONSENSUS_CONFIG") == root:telos-reth-config:440 ]] ||
+    die "archive companion config metadata differs"
+[[ -r $jwt && ! -L $jwt && $(stat -c '%a' "$jwt") == 400 ]] ||
+    die "archive JWT credential is unavailable"
+[[ ${RUNTIME_DIRECTORY:-} == "/run/telos-reth-archive-consensus-${instance}" ]] ||
+    die "archive companion runtime directory differs"
+[[ ${STATE_DIRECTORY:-} == "/var/lib/telos-reth-archive-consensus/${instance}" ]] ||
+    die "archive companion state directory differs"
+
+runtime_config=$RUNTIME_DIRECTORY/config.toml
+python3 -I -B - "$ARCHIVE_CONSENSUS_CONFIG" "$runtime_config" "$instance" "$jwt" "$STATE_DIRECTORY" \
+    "$ARCHIVE_CHAIN_ID" "$ARCHIVE_AUTHRPC_PORT" \
+    "${ARCHIVE_CONSENSUS_EVM_START_BLOCK:-}" "${ARCHIVE_CONSENSUS_PREV_HASH:-}" \
+    "${ARCHIVE_CONSENSUS_VALIDATE_HASH:-}" <<'PY'
+import os
+import pathlib
+import re
+import stat
+import sys
+import tomllib
+
+(
+    config_path,
+    runtime_config,
+    instance,
+    jwt_path,
+    state_directory,
+    chain_id,
+    authrpc_port,
+    start_block,
+    prev_hash,
+    validate_hash,
+) = sys.argv[1:]
+with open(config_path, "rb") as source:
+    config = tomllib.load(source)
+expected_data = state_directory
+if config.get("chain_id") != int(chain_id):
+    raise SystemExit("archive companion chain ID differs")
+if config.get("execution_endpoint") != f"http://127.0.0.1:{authrpc_port}":
+    raise SystemExit("archive companion Engine endpoint differs")
+if config.get("jwt_secret") != "SYSTEMD_CREDENTIAL":
+    raise SystemExit("archive companion JWT template marker differs")
+if config.get("data_path") != expected_data:
+    raise SystemExit("archive companion data path differs")
+if config.get("prev_hash") != "COPY_MANIFEST_PREV_HASH":
+    raise SystemExit("archive companion parent-hash template marker differs")
+if config.get("evm_start_block") != 0:
+    raise SystemExit("archive companion start-block template marker differs")
+if config.get("validate_hash") != "COPY_MANIFEST_VALIDATE_HASH":
+    raise SystemExit("archive companion validation-hash template marker differs")
+if pathlib.Path(config_path).resolve() != pathlib.Path(config_path):
+    raise SystemExit("archive companion config path is not canonical")
+if not start_block.isdecimal() or not 0 < int(start_block) <= 0xFFFFFFFF:
+    raise SystemExit("archive companion start block is malformed")
+for name, value in (("parent", prev_hash), ("validation", validate_hash)):
+    if re.fullmatch(r"0x[0-9a-f]{64}", value) is None:
+        raise SystemExit(f"archive companion {name} hash is malformed")
+jwt_secret = pathlib.Path(jwt_path).read_text(encoding="ascii").strip()
+if re.fullmatch(r"[0-9a-fA-F]{64}", jwt_secret) is None:
+    raise SystemExit("archive companion JWT credential is malformed")
+data_path = pathlib.Path(expected_data)
+current = data_path / "CURRENT"
+entries = list(data_path.iterdir())
+if entries and (current.is_symlink() or not current.is_file()):
+    raise SystemExit("archive companion state is nonempty without a safe RocksDB CURRENT file")
+initializing = not entries
+
+source = pathlib.Path(config_path).read_text(encoding="utf-8")
+replacements = {
+    'jwt_secret = "SYSTEMD_CREDENTIAL"': f'jwt_secret = "{jwt_secret}"',
+    'prev_hash = "COPY_MANIFEST_PREV_HASH"': f'prev_hash = "{prev_hash}"',
+    "evm_start_block = 0": f"evm_start_block = {start_block}",
+    'validate_hash = "COPY_MANIFEST_VALIDATE_HASH"': f'validate_hash = "{validate_hash}"',
+}
+for marker, replacement in replacements.items():
+    if source.count(marker) != 1:
+        raise SystemExit(f"archive companion template marker count differs: {marker}")
+    source = source.replace(marker, replacement)
+if not initializing:
+    source = source.replace(
+        f'validate_hash = "{validate_hash}"',
+        "# validate_hash was enforced when this companion state was initialized",
+    )
+target = pathlib.Path(runtime_config)
+temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+try:
+    os.write(descriptor, source.encode())
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+os.replace(temporary, target)
+metadata = os.stat(target, follow_symlinks=False)
+if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o400:
+    raise SystemExit("archive companion runtime config metadata differs")
+PY
+
+exec "$ARCHIVE_CONSENSUS_BINARY" --config "$runtime_config"

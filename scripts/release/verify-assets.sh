@@ -70,6 +70,12 @@ for archive in "${archives[@]}"; do
     tar -tzf "$archive" "${root}/telos-checkpoint-bootstrap" >/dev/null
     tar -tzf "$archive" "${root}/telos-rpc-router" >/dev/null
     tar -tzf "$archive" "${root}/ops/config/mainnet-router.env.example" >/dev/null
+    tar -tzf "$archive" "${root}/ops/config/mainnet-archive.env.example" >/dev/null
+    tar -tzf "$archive" "${root}/ops/config/mainnet-archive-consensus.toml.example" >/dev/null
+    tar -tzf "$archive" "${root}/ops/systemd/telos-reth-archive@.service" >/dev/null
+    tar -tzf "$archive" "${root}/ops/systemd/telos-reth-archive-consensus@.service" >/dev/null
+    tar -tzf "$archive" "${root}/ops/scripts/telos-reth-archive-run" >/dev/null
+    tar -tzf "$archive" "${root}/ops/scripts/telos-reth-archive-consensus-run" >/dev/null
     tar -tzf "$archive" "${root}/ops/systemd/telos-rpc-router@.service" >/dev/null
     tar -tzf "$archive" "${root}/ops/systemd/telos-rpc-router-readiness@.service" >/dev/null
     tar -tzf "$archive" "${root}/ops/systemd/telos-rpc-router-readiness@.timer" >/dev/null

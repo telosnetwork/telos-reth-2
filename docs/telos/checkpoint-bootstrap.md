@@ -4,9 +4,9 @@ This procedure creates a **post-anchor-only** Telos Reth database. It is suitabl
 and then a production RPC whose advertised history starts at the checkpoint. It does not create a
 full archive node and must not be presented as one.
 
-To preserve older RPC history, deploy it beside the still-live incumbent using the
-[retained-history router](./history-routing.md). The incumbent remains required for pre-boundary
-requests, filter lifecycle, and `eth_feeHistory`.
+To preserve older RPC history, deploy it with the independently copied archive and
+[retained-history router](./history-routing.md). The incumbent remains untouched during
+qualification but is not the router backend.
 
 Telos' historical canonical headers carry `EMPTY_ROOT_HASH` even when EVM state is non-empty. The
 normal Reth `init-state` command therefore rejects them, correctly, and remains unchanged. The
@@ -104,9 +104,12 @@ scripts/telos/checkpoint/legacy-extractor/build-exact-legacy-extractor.sh \
 ```
 
 The export holds one read transaction on the immutable copy. Every account's bytecode is loaded by
-its hash and verified; every storage duplicate is streamed into the same JSONL account record.
-Account hashing, storage hashing, and Merkle checkpoints must equal the copied execution
-checkpoint.
+its recorded table key; every storage duplicate is streamed into the same JSONL account record.
+If a legacy account's recorded bytecode key differs from `keccak256(code)`, the dump preserves the
+recorded `codeHash` explicitly and records both hashes in the signed export evidence. This exception
+is accepted only by the verified Telos placeholder-root import path; ordinary Ethereum state-dump
+imports still reject explicit bytecode hashes. Account hashing, storage hashing, and Merkle
+checkpoints must equal the copied execution checkpoint.
 
 ```bash
 /srv/telos-checkpoints/run-001/exact-legacy-extractor/telos-legacy-checkpoint-export \
@@ -116,9 +119,9 @@ checkpoint.
 
 This creates `state.jsonl` and `state.legacy-evidence.json`. The first JSONL line declares the real
 trie root derived through the exact legacy hashed-state/trie codecs; the remaining lines contain
-complete account, storage, and bytecode state. The evidence also binds the canonical header RLP,
-aligned stage heights, native block ID, and the gas price/revision effective for the first child.
-The new database independently rebuilds the trie from those lines.
+complete account, storage, bytecode, and any exact legacy bytecode-key overrides. The evidence also
+binds the canonical header RLP, aligned stage heights, native block ID, and the gas price/revision
+effective for the first child. The new database independently rebuilds the trie from those lines.
 
 Do not substitute the current release's exporter, relax the pinned commit/lock checks, or migrate
 the only production database read-write merely to make an extractor work.

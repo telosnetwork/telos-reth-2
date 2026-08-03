@@ -91,6 +91,7 @@ struct LegacyEvidence {
     accounts: u64,
     storage_slots: u64,
     bytecode_accounts: u64,
+    bytecode_hash_overrides: Vec<BytecodeHashOverride>,
     plain_accounts: u64,
     hashed_accounts: u64,
     plain_storage_slots: u64,
@@ -98,11 +99,19 @@ struct LegacyEvidence {
     body_transaction_count: u64,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct BytecodeHashOverride {
+    address: alloy_primitives::Address,
+    recorded_code_hash: B256,
+    actual_code_hash: B256,
+}
+
 #[derive(Default)]
 struct ExportCounts {
     accounts: u64,
     storage_slots: u64,
     bytecode_accounts: u64,
+    bytecode_hash_overrides: Vec<BytecodeHashOverride>,
 }
 
 impl Command {
@@ -205,6 +214,7 @@ impl Command {
             accounts: counts.accounts,
             storage_slots: counts.storage_slots,
             bytecode_accounts: counts.bytecode_accounts,
+            bytecode_hash_overrides: counts.bytecode_hash_overrides,
             plain_accounts,
             hashed_accounts,
             plain_storage_slots,
@@ -283,11 +293,19 @@ fn export_accounts<TX: DbTx>(tx: &TX, writer: &mut impl Write) -> eyre::Result<E
             let bytecode = tx.get::<tables::Bytecodes>(code_hash)?.ok_or_else(|| {
                 eyre::eyre!("account {address} references missing bytecode {code_hash}")
             })?;
-            if bytecode.hash_slow() != code_hash {
-                eyre::bail!("account {address} bytecode hash mismatch")
+            let actual_code_hash = bytecode.hash_slow();
+            if actual_code_hash != code_hash {
+                counts.bytecode_hash_overrides.push(BytecodeHashOverride {
+                    address,
+                    recorded_code_hash: code_hash,
+                    actual_code_hash,
+                });
             }
             writer.write_all(b",\"code\":")?;
             serde_json::to_writer(&mut *writer, &bytecode.original_bytes())?;
+            if actual_code_hash != code_hash {
+                write!(writer, ",\"codeHash\":\"{code_hash}\"")?;
+            }
             counts.bytecode_accounts += 1;
         }
         if let Some((stored_address, first)) = storage.seek_exact(address)? {

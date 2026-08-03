@@ -154,6 +154,44 @@ def main() -> None:
         raise SystemExit("legacy state export contains no accounts")
     if counts["bytecode_accounts"] > counts["accounts"]:
         raise SystemExit("legacy bytecode-account count exceeds the account count")
+    bytecode_hash_overrides = exported.get("bytecode_hash_overrides", [])
+    if not isinstance(bytecode_hash_overrides, list) or len(bytecode_hash_overrides) > counts[
+        "bytecode_accounts"
+    ]:
+        raise SystemExit("legacy bytecode-hash override evidence is invalid")
+    override_addresses: set[str] = set()
+    for index, override in enumerate(bytecode_hash_overrides):
+        if not isinstance(override, dict) or set(override) != {
+            "address",
+            "recorded_code_hash",
+            "actual_code_hash",
+        }:
+            raise SystemExit(f"legacy bytecode-hash override {index} has an invalid shape")
+        address = override["address"]
+        if not isinstance(address, str) or len(address) != 42 or not address.startswith("0x"):
+            raise SystemExit(f"legacy bytecode-hash override {index} has an invalid address")
+        try:
+            bytes.fromhex(address[2:])
+        except ValueError as error:
+            raise SystemExit(
+                f"legacy bytecode-hash override {index} address is not hexadecimal: {error}"
+            ) from error
+        normalized_address = address.lower()
+        if normalized_address in override_addresses:
+            raise SystemExit("legacy bytecode-hash override evidence repeats an address")
+        override_addresses.add(normalized_address)
+        recorded = hex32(
+            override["recorded_code_hash"],
+            f"legacy bytecode-hash override {index} recorded hash",
+            allow_zero=False,
+        )
+        actual = hex32(
+            override["actual_code_hash"],
+            f"legacy bytecode-hash override {index} actual hash",
+            allow_zero=False,
+        )
+        if recorded == actual:
+            raise SystemExit("legacy bytecode-hash override does not describe a mismatch")
     if counts["accounts"] != counts["plain_accounts"] or counts["storage_slots"] != counts[
         "plain_storage_slots"
     ]:

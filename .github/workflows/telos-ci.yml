@@ -333,6 +333,12 @@ jobs:
             telos-reth-0.1.0-x86_64-unknown-linux-gnu/docs/telos/compatibility.md \
             telos-reth-0.1.0-x86_64-unknown-linux-gnu/docs/telos/history-routing.md \
             telos-reth-0.1.0-x86_64-unknown-linux-gnu/ops/config/mainnet-router.env.example \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/ops/config/mainnet-archive.env.example \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/ops/config/mainnet-archive-consensus.toml.example \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/ops/systemd/telos-reth-archive@.service \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/ops/systemd/telos-reth-archive-consensus@.service \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/ops/scripts/telos-reth-archive-run \
+            telos-reth-0.1.0-x86_64-unknown-linux-gnu/ops/scripts/telos-reth-archive-consensus-run \
             telos-reth-0.1.0-x86_64-unknown-linux-gnu/ops/systemd/telos-rpc-router@.service \
             telos-reth-0.1.0-x86_64-unknown-linux-gnu/ops/systemd/telos-rpc-router-readiness@.service \
             telos-reth-0.1.0-x86_64-unknown-linux-gnu/ops/systemd/telos-rpc-router-readiness@.timer \

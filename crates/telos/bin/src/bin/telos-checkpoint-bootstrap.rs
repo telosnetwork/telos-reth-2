@@ -351,6 +351,7 @@ where
         );
     }
     let mut accounts = tx.cursor_read::<tables::HashedAccounts>()?;
+    let mut bytecode_hash_overrides = 0u64;
     for entry in accounts.walk(None)? {
         let (hashed_address, account) = entry?;
         if let Some(code_hash) = account.bytecode_hash.filter(|hash| *hash != KECCAK_EMPTY) {
@@ -361,11 +362,16 @@ where
             })?;
             let actual_hash = bytecode.hash_slow();
             if actual_hash != code_hash {
-                eyre::bail!(
-                    "reopened checkpoint bytecode hash mismatch for account {hashed_address}: account {code_hash}, bytes {actual_hash}"
-                );
+                bytecode_hash_overrides += 1;
             }
         }
+    }
+    if bytecode_hash_overrides != 0 {
+        info!(
+            target: "reth::cli",
+            bytecode_hash_overrides,
+            "Preserved legacy accounts whose recorded bytecode-table keys differ from their bytecode hashes"
+        );
     }
 
     // Recompute without consulting persisted trie nodes, then separately check the persisted trie.

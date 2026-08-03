@@ -437,10 +437,19 @@ impl RpcRouter {
                     .then(|| error_response(response_id, INVALID_PARAMS, message))
             }
         };
+        let restores_legacy_block_fields = is_block_object_method(method);
         let result = self.execute(plan, request, expects_response, &budget).await;
         match result {
             Ok(None) => None,
-            Ok(Some(response)) => Some(response),
+            Ok(Some(mut response)) => {
+                if restores_legacy_block_fields &&
+                    let Err(error) = restore_legacy_block_fields(&mut response)
+                {
+                    return expects_response
+                        .then(|| error_response(response_id, ROUTER_ERROR, error.to_string()))
+                }
+                Some(response)
+            }
             Err(error) => expects_response
                 .then(|| error_response(response_id, ROUTER_ERROR, error.to_string())),
         }
@@ -800,6 +809,42 @@ fn copied_backend_error(
 
 fn has_null_result(response: &Value) -> bool {
     response.get("result").is_some_and(Value::is_null)
+}
+
+fn is_block_object_method(method: &str) -> bool {
+    matches!(
+        method,
+        "eth_getBlockByNumber" |
+            "eth_getBlockByHash" |
+            "eth_getHeaderByNumber" |
+            "eth_getHeaderByHash" |
+            "eth_getUncleByBlockNumberAndIndex" |
+            "eth_getUncleByBlockHashAndIndex"
+    )
+}
+
+fn restore_legacy_block_fields(response: &mut Value) -> Result<(), RouterError> {
+    let Some(result) = response.get_mut("result") else { return Ok(()) };
+    if result.is_null() {
+        return Ok(())
+    }
+    let block = result.as_object_mut().ok_or_else(|| RouterError::Backend {
+        backend: "router",
+        message: "block response is not an object".to_owned(),
+    })?;
+    if block.contains_key("totalDifficulty") {
+        return Ok(())
+    }
+    let Some(difficulty) = block.get("difficulty").and_then(Value::as_str) else { return Ok(()) };
+    if parse_quantity(difficulty) != Ok(0) {
+        return Err(RouterError::Backend {
+            backend: "router",
+            message: "cannot restore totalDifficulty for a nonzero or invalid difficulty"
+                .to_owned(),
+        })
+    }
+    block.insert("totalDifficulty".to_owned(), Value::String("0x0".to_owned()));
+    Ok(())
 }
 
 fn block_probe_is_absent(response: &Value, expected_hash: &str) -> Result<bool, RouterError> {
@@ -1625,7 +1670,12 @@ pub async fn readiness(
         history_probe_hash,
         history_probe_number,
     )?;
-    response_empty_array(archive_history_logs?, "archive", "history logs")?;
+    response_logs_at_block(
+        archive_history_logs?,
+        "archive",
+        history_probe_number,
+        history_probe_address,
+    )?;
     response_expected_quantity(
         routed_history_balance,
         "router",
@@ -1778,20 +1828,33 @@ fn response_receipt_identity(
     Ok(())
 }
 
-fn response_empty_array(
+fn response_logs_at_block(
     response: Option<Value>,
     backend: &'static str,
-    field: &'static str,
+    expected_block: u64,
+    expected_address: &str,
 ) -> Result<(), RouterError> {
     let response = response.ok_or_else(|| missing_response(backend))?;
-    let result = response.get("result").and_then(Value::as_array).ok_or_else(|| {
-        RouterError::Backend { backend, message: format!("{field} response is not an array") }
-    })?;
-    if !result.is_empty() {
-        return Err(RouterError::Backend {
+    let result =
+        response.get("result").and_then(Value::as_array).ok_or_else(|| RouterError::Backend {
             backend,
-            message: format!("{field} response is not empty"),
-        })
+            message: "history logs response is not an array".to_owned(),
+        })?;
+    validate_log_range(result, Some(expected_block), Some(expected_block), backend)?;
+    for log in result {
+        let address = log.get("address").and_then(Value::as_str).ok_or_else(|| {
+            RouterError::Backend { backend, message: "history log has no address".to_owned() }
+        })?;
+        parse_address(address).map_err(|_| RouterError::Backend {
+            backend,
+            message: "history log has an invalid address".to_owned(),
+        })?;
+        if !address.eq_ignore_ascii_case(expected_address) {
+            return Err(RouterError::Backend {
+                backend,
+                message: "history log address does not match the configured probe".to_owned(),
+            })
+        }
     }
     Ok(())
 }
@@ -3394,7 +3457,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn readiness_proves_pre_savanna_balance_receipt_and_empty_logs() {
+    async fn readiness_proves_history_balance_receipt_and_filtered_logs() {
         let anchor_hash = format!("0x{}", "aa".repeat(32));
         let history_hash = format!("0x{}", "bb".repeat(32));
         let transaction_hash = format!("0x{}", "cc".repeat(32));
@@ -3435,6 +3498,7 @@ mod tests {
             let anchor_hash = anchor_hash.clone();
             let history_hash = history_hash.clone();
             let transaction_hash = transaction_hash.clone();
+            let address = address.clone();
             let storage_address = storage_address.clone();
             let storage_value = storage_value.clone();
             let common_hash = common_hash.clone();
@@ -3442,6 +3506,7 @@ mod tests {
                 let anchor_hash = anchor_hash.clone();
                 let history_hash = history_hash.clone();
                 let transaction_hash = transaction_hash.clone();
+                let address = address.clone();
                 let storage_address = storage_address.clone();
                 let storage_value = storage_value.clone();
                 let common_hash = common_hash.clone();
@@ -3481,9 +3546,11 @@ mod tests {
                                 "blockNumber": "0x3e7",
                             },
                         }),
-                        "history-logs" => {
-                            json!({"jsonrpc": "2.0", "id": id, "result": []})
-                        }
+                        "history-logs" => json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": [{"blockNumber": "0x3e7", "address": address}],
+                        }),
                         "telos-router-storage-0" => {
                             assert_eq!(request["method"], "eth_getStorageAt");
                             assert_eq!(request["params"][0], storage_address);
@@ -3577,5 +3644,23 @@ mod tests {
             LIVE_START - 1,
         )
         .is_err());
+    }
+
+    #[test]
+    fn restores_legacy_total_difficulty_only_for_zero_difficulty_blocks() {
+        let mut response = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"hash": format!("0x{}", "11".repeat(32)), "difficulty": "0x0"},
+        });
+        restore_legacy_block_fields(&mut response).unwrap();
+        assert_eq!(response["result"]["totalDifficulty"], "0x0");
+
+        let mut invalid = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"hash": format!("0x{}", "22".repeat(32)), "difficulty": "0x1"},
+        });
+        assert!(restore_legacy_block_fields(&mut invalid).is_err());
     }
 }

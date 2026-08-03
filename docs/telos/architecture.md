@@ -117,9 +117,9 @@ finalized parity. Historical replay and diagnostic RPC have a separate gate that
 after canonical forward execution is qualified.
 
 The bootstrap database is sparse. Public historical RPC therefore uses the
-[retained-history router](./history-routing.md) with a still-live incumbent side by side. The
-router is not an archive and does not authorize incumbent retirement; the incumbent remains the
-backend for pre-boundary history, filter lifecycle, and `eth_feeHistory`.
+[retained-history router](./history-routing.md) with an independently copied archive. The
+incumbent remains side by side during qualification but is not the router backend, and nothing in
+this topology authorizes its retirement.
 
 ## Upstream maintenance
 

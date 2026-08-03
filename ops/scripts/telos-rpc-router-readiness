@@ -89,13 +89,13 @@ emit_metrics() {
         echo '# HELP telos_rpc_router_live_head_block Live v2 backend head reported by router readiness.'
         echo '# TYPE telos_rpc_router_live_head_block gauge'
         printf 'telos_rpc_router_live_head_block{network="%s"} %s\n' "$instance" "$live_head"
-        echo '# HELP telos_rpc_router_archive_head_block Retained incumbent head reported by router readiness.'
+        echo '# HELP telos_rpc_router_archive_head_block Independent archive head reported by router readiness.'
         echo '# TYPE telos_rpc_router_archive_head_block gauge'
         printf 'telos_rpc_router_archive_head_block{network="%s"} %s\n' "$instance" "$archive_head"
         echo '# HELP telos_rpc_router_common_head_block Common backend head validated by router readiness.'
         echo '# TYPE telos_rpc_router_common_head_block gauge'
         printf 'telos_rpc_router_common_head_block{network="%s"} %s\n' "$instance" "$common_head"
-        echo '# HELP telos_rpc_router_backend_head_lag_blocks Absolute live/incumbent head difference.'
+        echo '# HELP telos_rpc_router_backend_head_lag_blocks Absolute live/archive head difference.'
         echo '# TYPE telos_rpc_router_backend_head_lag_blocks gauge'
         printf 'telos_rpc_router_backend_head_lag_blocks{network="%s"} %s\n' "$instance" "$head_lag"
     } > "$tmp"
