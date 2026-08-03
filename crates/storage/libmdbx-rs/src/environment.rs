@@ -18,13 +18,19 @@ use std::{
     ptr,
     sync::{mpsc::sync_channel, Arc},
     thread::sleep,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tracing::warn;
 
 /// The default maximum duration of a read transaction.
 #[cfg(feature = "read-tx-timeouts")]
 const DEFAULT_MAX_READ_TRANSACTION_DURATION: Duration = Duration::from_secs(5 * 60);
+
+/// Delay between attempts to acquire MDBX's single read-write transaction.
+const RW_TRANSACTION_RETRY_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Time spent waiting for MDBX's writer lock before reporting a process stall.
+const RW_TRANSACTION_STALL_WARNING_THRESHOLD: Duration = Duration::from_millis(250);
 
 /// An environment supports multiple databases, all residing in the same shared-memory map.
 ///
@@ -116,6 +122,7 @@ impl Environment {
     /// Create a read-write transaction for use with the environment. This method will block while
     /// there are any other read-write transactions open on the environment.
     pub fn begin_rw_txn(&self) -> Result<Transaction<RW>> {
+        let wait_started = Instant::now();
         let mut warned = false;
         let txn = loop {
             let (tx, rx) = sync_channel(0);
@@ -126,11 +133,18 @@ impl Environment {
             });
             let res = rx.recv().unwrap();
             if matches!(&res, Err(Error::Busy)) {
-                if !warned {
+                let waited = wait_started.elapsed();
+                if !warned && waited >= RW_TRANSACTION_STALL_WARNING_THRESHOLD {
                     warned = true;
-                    warn!(target: "libmdbx", "Process stalled, awaiting read-write transaction lock.");
+                    warn!(
+                        target: "libmdbx",
+                        ?waited,
+                        "Process stalled, awaiting read-write transaction lock."
+                    );
                 }
-                sleep(Duration::from_millis(250));
+                // MDBX reports contention instead of queuing writers. Retry quickly so a
+                // short-lived transaction does not impose a fixed 250 ms delay on its successor.
+                sleep(RW_TRANSACTION_RETRY_INTERVAL);
                 continue
             }
 
