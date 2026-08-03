@@ -3613,7 +3613,7 @@ fn provider_error(error: reth_provider::ProviderError) -> TelosSidecarError {
 
 /// Commits only the MDBX transaction used by sidecar tables.
 ///
-/// Sidecar operations do not mutate static files or RocksDB. Committing the full provider would
+/// Sidecar operations do not mutate static files or `RocksDB`. Committing the full provider would
 /// finalize static-file writers and can fail while Reth has a prune queued; closing the underlying
 /// database transaction is sufficient and keeps sidecar access independent of pruning.
 fn commit_mdbx_only<P: DBProvider>(provider: P) -> Result<(), TelosSidecarError> {
