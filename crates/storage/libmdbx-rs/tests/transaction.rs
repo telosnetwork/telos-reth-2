@@ -5,6 +5,7 @@ use std::{
     io::Write,
     sync::{Arc, Barrier},
     thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 use tempfile::tempdir;
 
@@ -278,6 +279,34 @@ fn test_concurrent_writers() {
             txn.get(db.dbi(), format!("{key}{i}").as_bytes()).unwrap().unwrap()
         );
     }
+}
+
+#[test]
+fn test_contended_writer_retries_promptly() {
+    let dir = tempdir().unwrap();
+    let env = Arc::new(Environment::builder().open(dir.path()).unwrap());
+    let held_txn = env.begin_rw_txn().unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+
+    let contender_env = Arc::clone(&env);
+    let contender_barrier = Arc::clone(&barrier);
+    let contender = thread::spawn(move || {
+        contender_barrier.wait();
+        let started = Instant::now();
+        let txn = contender_env.begin_rw_txn().unwrap();
+        txn.commit().unwrap();
+        started.elapsed()
+    });
+
+    barrier.wait();
+    thread::sleep(Duration::from_millis(50));
+    held_txn.commit().unwrap();
+
+    let elapsed = contender.join().unwrap();
+    assert!(
+        elapsed < Duration::from_millis(200),
+        "short writer contention took {elapsed:?} to resolve"
+    );
 }
 
 #[test]
