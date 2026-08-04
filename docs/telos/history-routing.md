@@ -120,9 +120,13 @@ sudo /usr/local/libexec/telos-reth-release activate router \
 Keep the incumbent on its existing loopback port. First create a transactional MDBX/static-file
 copy in `/var/lib/telos-reth-archive/mainnet`; do not live-`rsync` the database file and do not copy
 `jwt.hex`, `discovery-secret`, `known-peers.json`, logs, or any signer material. Install a fresh
-archive JWT, the digest-pinned legacy archive binary, and the exact matching qualified legacy
-consensus companion. The live v2 companion is not interchangeable with this retained-history
-pair: it negotiates newer Engine capabilities that the legacy execution binary does not expose.
+archive JWT, the digest-pinned legacy archive binary, and the exact consensus companion artifact
+qualified with that archive. The current matrix pins companion commit
+`8a3000cd83b2d1c3d84c812517dd888995f2eee0` for both live and archive roles because it requires the
+V1 Engine methods shared by both execution clients and accepts additional advertised capabilities.
+That pairing is release-specific: do not substitute a future live companion into the retained-
+history pair until its capability negotiation, catch-up, restart, and canonical parity have been
+qualified against the pinned legacy archive binary.
 The reference services make both archive processes loopback-only and give them separate users and
 state directories:
 
