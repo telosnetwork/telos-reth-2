@@ -21,9 +21,10 @@ use reth_ethereum_cli::ExtendedCommand;
 use reth_node_telos::{
     rpc_policy::{
         enforce_exact_auth_rpc_surface, enforce_exact_public_rpc_surface, enforce_telos_rpc_policy,
-        validate_telos_transaction_count_block, REPLAY_UNSAFE_RPC_METHODS,
-        TELOS_FORWARDER_REQUIRED_RPC_METHODS, TELOS_UNSUPPORTED_AUTH_METHODS,
-        TELOS_UNSUPPORTED_RPC_METHODS,
+        restrict_telos_ws_only_methods, validate_telos_transaction_count_block,
+        REPLAY_UNSAFE_RPC_METHODS, TELOS_FORWARDER_REQUIRED_RPC_METHODS,
+        TELOS_UNSUPPORTED_AUTH_METHODS, TELOS_UNSUPPORTED_RPC_METHODS,
+        TELOS_WS_ONLY_ETH_RPC_ALLOWLIST,
     },
     sidecar::{ProviderTelosSidecarStore, TelosChainIdentity, TelosSidecarTables},
     startup::validate_telos_startup,
@@ -230,6 +231,10 @@ fn main() {
                     }
                     for method in TELOS_UNSUPPORTED_RPC_METHODS {
                         ctx.modules.remove_method_from_configured(method);
+                        ctx.auth_module.remove_auth_method(method);
+                    }
+                    restrict_telos_ws_only_methods(ctx.modules);
+                    for method in TELOS_WS_ONLY_ETH_RPC_ALLOWLIST {
                         ctx.auth_module.remove_auth_method(method);
                     }
                     info!(

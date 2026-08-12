@@ -61,6 +61,9 @@ pub const TELOS_PUBLIC_ETH_RPC_ALLOWLIST: &[&str] = &[
     "eth_uninstallFilter",
 ];
 
+/// Public Ethereum methods qualified only for `WebSocket` transports.
+pub const TELOS_WS_ONLY_ETH_RPC_ALLOWLIST: &[&str] = &["eth_subscribe", "eth_unsubscribe"];
+
 /// Exact public network methods qualified for the follower's no-peer network implementation.
 pub const TELOS_PUBLIC_NET_RPC_ALLOWLIST: &[&str] = &["net_peerCount", "net_version"];
 
@@ -73,7 +76,7 @@ pub const TELOS_PUBLIC_WEB3_RPC_ALLOWLIST: &[&str] = &["web3_sha3"];
 /// would therefore not verify against the canonical header even when the returned account values
 /// are correct. Fee history and transaction filling use Ethereum fee-market semantics rather than
 /// the native gas-price schedule, and local transaction submission bypasses the native forwarder.
-pub const TELOS_UNSUPPORTED_RPC_METHODS: [&str; 28] = [
+pub const TELOS_UNSUPPORTED_RPC_METHODS: [&str; 26] = [
     "eth_blobBaseFee",
     "eth_capabilities",
     "eth_coinbase",
@@ -97,9 +100,7 @@ pub const TELOS_UNSUPPORTED_RPC_METHODS: [&str; 28] = [
     "eth_signTypedData",
     "eth_submitHashrate",
     "eth_submitWork",
-    "eth_subscribe",
     "eth_syncing",
-    "eth_unsubscribe",
     "net_listening",
     "web3_clientVersion",
 ];
@@ -238,6 +239,9 @@ pub fn enforce_exact_public_rpc_surface(
             expected.extend(TELOS_PUBLIC_ETH_RPC_ALLOWLIST.iter().copied().filter(|method| {
                 forwarder_enabled || !TELOS_FORWARDER_REQUIRED_RPC_METHODS.contains(method)
             }));
+            if transport == "WebSocket" {
+                expected.extend(TELOS_WS_ONLY_ETH_RPC_ALLOWLIST.iter().copied());
+            }
         }
         if net {
             expected.extend(TELOS_PUBLIC_NET_RPC_ALLOWLIST.iter().copied());
@@ -258,6 +262,12 @@ pub fn enforce_exact_public_rpc_surface(
         }
     }
     Ok(())
+}
+
+/// Removes WebSocket-only methods from transports that cannot carry subscriptions.
+pub fn restrict_telos_ws_only_methods(modules: &mut TransportRpcModules) {
+    modules.remove_http_methods(TELOS_WS_ONLY_ETH_RPC_ALLOWLIST.iter().copied());
+    modules.remove_ipc_methods(TELOS_WS_ONLY_ETH_RPC_ALLOWLIST.iter().copied());
 }
 
 fn validate_transport(
@@ -465,6 +475,54 @@ mod tests {
         }
         let safe = TransportRpcModules::default().with_config(config).with_http(http);
         enforce_exact_public_rpc_surface(&safe, false).unwrap();
+    }
+
+    #[test]
+    fn subscriptions_are_exposed_only_on_websocket() {
+        let config = TransportRpcModuleConfig::default()
+            .with_http([RethRpcModule::Eth])
+            .with_ws([RethRpcModule::Eth])
+            .with_ipc([RethRpcModule::Eth]);
+        let eth_module = || {
+            let mut module = RpcModule::new(());
+            for method in TELOS_PUBLIC_ETH_RPC_ALLOWLIST
+                .iter()
+                .copied()
+                .chain(TELOS_WS_ONLY_ETH_RPC_ALLOWLIST.iter().copied())
+            {
+                module.register_method(method, |_, _, _| "ok").unwrap();
+            }
+            module
+        };
+        let mut modules = TransportRpcModules::default()
+            .with_config(config)
+            .with_http(eth_module())
+            .with_ws(eth_module())
+            .with_ipc(eth_module());
+
+        restrict_telos_ws_only_methods(&mut modules);
+
+        for method in TELOS_WS_ONLY_ETH_RPC_ALLOWLIST {
+            assert!(modules
+                .http_methods(|name| name == *method)
+                .unwrap()
+                .method_names()
+                .next()
+                .is_none());
+            assert!(modules
+                .ws_methods(|name| name == *method)
+                .unwrap()
+                .method_names()
+                .next()
+                .is_some());
+            assert!(modules
+                .ipc_methods(|name| name == *method)
+                .unwrap()
+                .method_names()
+                .next()
+                .is_none());
+        }
+        enforce_exact_public_rpc_surface(&modules, true).unwrap();
     }
 
     #[test]
