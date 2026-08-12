@@ -61,7 +61,7 @@ pub const TELOS_PUBLIC_ETH_RPC_ALLOWLIST: &[&str] = &[
     "eth_uninstallFilter",
 ];
 
-/// Public Ethereum methods qualified only for WebSocket transports.
+/// Public Ethereum methods qualified only for `WebSocket` transports.
 pub const TELOS_WS_ONLY_ETH_RPC_ALLOWLIST: &[&str] = &["eth_subscribe", "eth_unsubscribe"];
 
 /// Exact public network methods qualified for the follower's no-peer network implementation.
@@ -503,9 +503,24 @@ mod tests {
         restrict_telos_ws_only_methods(&mut modules);
 
         for method in TELOS_WS_ONLY_ETH_RPC_ALLOWLIST {
-            assert!(modules.http_methods(|name| name == *method).unwrap().is_empty());
-            assert!(!modules.ws_methods(|name| name == *method).unwrap().is_empty());
-            assert!(modules.ipc_methods(|name| name == *method).unwrap().is_empty());
+            assert!(modules
+                .http_methods(|name| name == *method)
+                .unwrap()
+                .method_names()
+                .next()
+                .is_none());
+            assert!(modules
+                .ws_methods(|name| name == *method)
+                .unwrap()
+                .method_names()
+                .next()
+                .is_some());
+            assert!(modules
+                .ipc_methods(|name| name == *method)
+                .unwrap()
+                .method_names()
+                .next()
+                .is_none());
         }
         enforce_exact_public_rpc_surface(&modules, true).unwrap();
     }
