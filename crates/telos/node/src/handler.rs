@@ -386,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn chain_three_deposit_to_zero_burns_value() {
+    fn chain_three_transfer_to_zero_credits_authoritative_zero_account() {
         let caller = Address::repeat_byte(0x11);
         let mut evm = evm_with_caller(caller, 0);
         evm.components_mut().0.insert_account_info(
@@ -400,7 +400,7 @@ mod tests {
         let output = evm.transact_raw(tx).unwrap();
         let gas_used = output.result.gas().tx_gas_used();
         assert_eq!(output.state[&caller].info.balance, U256::from(10_000_000 - gas_used - 25));
-        assert_eq!(output.state[&Address::ZERO].info.balance, U256::from(7));
+        assert_eq!(output.state[&Address::ZERO].info.balance, U256::from(32));
     }
 
     #[test]

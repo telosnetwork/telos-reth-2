@@ -301,38 +301,6 @@ fn apply_call_value<DB: Database>(
             if authenticated_context &&
                 chain_id == Some(3) &&
                 inputs.target_address.is_zero() &&
-                !inputs.caller.is_zero() =>
-        {
-            // A native deposit to address zero is a burn. Debit and journal the source while only
-            // touching the destination; crediting the zero account would mint an EVM-only balance.
-            // The legacy transfer still checked whether the temporary destination credit would
-            // overflow before undoing it, so preserve both error precedence and that edge case.
-            let source_balance = {
-                let source = journal.load_account_mut(inputs.caller)?.data;
-                *source.balance()
-            };
-            if value > source_balance {
-                return Ok(Some(InstructionResult::OutOfFunds))
-            }
-            let destination_balance = {
-                let destination = journal.load_account_mut(Address::ZERO)?.data;
-                *destination.balance()
-            };
-            if destination_balance.checked_add(value).is_none() {
-                return Ok(Some(InstructionResult::OverflowPayment))
-            }
-            {
-                let mut source = journal.load_account_mut(inputs.caller)?.data;
-                let debited = source.decr_balance(value);
-                debug_assert!(debited);
-            }
-            journal.load_account_mut(Address::ZERO)?.data.touch();
-            Ok(None)
-        }
-        CallValue::Transfer(value)
-            if authenticated_context &&
-                chain_id == Some(3) &&
-                inputs.target_address.is_zero() &&
                 inputs.caller.is_zero() =>
         {
             // The legacy burn guard explicitly excludes the zero sender. A zero-to-zero transfer
@@ -577,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn chain_three_transfer_to_zero_burns_without_crediting_zero() {
+    fn chain_three_transfer_to_zero_credits_authoritative_zero_account() {
         let caller = Address::repeat_byte(0x11);
         let mut context = context_with_accounts(
             native_tx(caller, 3, 1),
@@ -596,7 +564,7 @@ mod tests {
 
         let state = context.journaled_state.finalize();
         assert_eq!(state[&caller].info.balance, U256::from(75));
-        assert_eq!(state[&Address::ZERO].info.balance, U256::from(7));
+        assert_eq!(state[&Address::ZERO].info.balance, U256::from(32));
     }
 
     #[test]
@@ -643,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn chain_three_burn_preserves_legacy_destination_overflow_error() {
+    fn chain_three_transfer_to_zero_preserves_destination_overflow_error() {
         let caller = Address::repeat_byte(0x11);
         let mut context = context_with_accounts(
             native_tx(caller, 3, 1),
