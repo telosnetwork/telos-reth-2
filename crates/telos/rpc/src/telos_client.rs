@@ -85,6 +85,8 @@ pub struct TelosClientArgs {
     /// Seconds to cache the gas-price reading from the `eosio.evm` config table.
     /// Defaults to 8 seconds when unset.
     pub gas_cache_seconds: Option<u32>,
+    /// Whether to ask nodeos to retry a transaction until it enters a block.
+    pub transaction_retry: bool,
 }
 
 impl fmt::Debug for TelosClientArgs {
@@ -96,6 +98,7 @@ impl fmt::Debug for TelosClientArgs {
             .field("signer_permission", &self.signer_permission)
             .field("signer_key_file", &self.signer_key_file.as_ref().map(|_| "<redacted>"))
             .field("gas_cache_seconds", &self.gas_cache_seconds)
+            .field("transaction_retry", &self.transaction_retry)
             .finish()
     }
 }
@@ -142,7 +145,7 @@ pub enum TelosClientError {
 
 /// A client that forwards signed Ethereum transactions to the Telos native chain
 /// by wrapping them in an `eosio.evm::raw` action and submitting a signed Antelope
-/// transaction to `/v1/chain/push_transaction`.
+/// transaction to a native Telos submission endpoint.
 #[derive(Clone)]
 pub struct TelosClient {
     inner: Arc<TelosClientInner>,
@@ -161,6 +164,7 @@ struct TelosClientInner {
     expected_native_chain_id: B256,
     max_priority_fee_per_gas: U256,
     gas_cache_seconds: u32,
+    transaction_retry: bool,
     gas_price_cache: Mutex<Option<(Instant, U256)>>,
 }
 
@@ -378,6 +382,7 @@ impl TelosClient {
                 expected_native_chain_id,
                 max_priority_fee_per_gas,
                 gas_cache_seconds,
+                transaction_retry: args.transaction_retry,
                 gas_price_cache: Mutex::new(None),
             }),
         })
@@ -394,7 +399,7 @@ impl TelosClient {
     /// 2. Build the action + packed transaction.
     /// 3. `sha256(chain_id || packed_trx || zero_cfa_hash)` → digest.
     /// 4. K1 canonical sign.
-    /// 5. POST to `/v1/chain/push_transaction`.
+    /// 5. POST to the configured native submission endpoint.
     pub async fn send_to_telos(&self, tx: &[u8]) -> Result<(), EthApiError> {
         validate_raw_transaction(tx, self.inner.expected_evm_chain_id)?;
         let submission = self.prepare_submission_with_retry(tx).await.map_err(|err| {
@@ -508,8 +513,9 @@ impl TelosClient {
         &self,
         submission: &PreparedSubmission,
     ) -> Result<(), antelope::AntelopeError> {
-        let url = format!("{}/v1/chain/push_transaction", self.inner.endpoint);
-        let response = self.inner.http_client.post(&url).json(&submission.payload).send().await?;
+        let (path, payload) = submission_request(&submission.payload, self.inner.transaction_retry);
+        let url = format!("{}{}", self.inner.endpoint, path);
+        let response = self.inner.http_client.post(&url).json(&payload).send().await?;
         let (status, body) = read_nodeos_response(response).await?;
         let status_code = status.as_u16();
         if !status.is_success() {
@@ -692,6 +698,25 @@ impl TelosClient {
         let info = self.get_info().await?;
         validate_native_chain_id(&info.chain_id, self.inner.expected_native_chain_id)?;
         Ok(info)
+    }
+}
+
+fn submission_request(
+    transaction: &serde_json::Value,
+    transaction_retry: bool,
+) -> (&'static str, serde_json::Value) {
+    if transaction_retry {
+        (
+            "/v1/chain/send_transaction2",
+            serde_json::json!({
+                "return_failure_trace": true,
+                "retry_trx": true,
+                "retry_trx_num_blocks": 0,
+                "transaction": transaction,
+            }),
+        )
+    } else {
+        ("/v1/chain/push_transaction", transaction.clone())
     }
 }
 
@@ -913,6 +938,7 @@ mod tests {
                 expected_native_chain_id,
                 max_priority_fee_per_gas,
                 gas_cache_seconds: DEFAULT_GAS_CACHE_SECONDS,
+                transaction_retry: false,
                 gas_price_cache: Mutex::new(None),
             }),
         }
@@ -1024,6 +1050,37 @@ mod tests {
             "processed": { "receipt": { "status": "executed" } }
         });
         assert!(validate_transaction_response(&value, &expected_transaction_id).is_ok());
+    }
+
+    #[test]
+    fn durable_retry_uses_send_transaction2_until_inclusion() {
+        let transaction = serde_json::json!({
+            "signatures": ["SIG_K1_test"],
+            "compression": "none",
+            "packed_context_free_data": "",
+            "packed_trx": "00",
+        });
+        let (path, payload) = submission_request(&transaction, true);
+
+        assert_eq!(path, "/v1/chain/send_transaction2");
+        assert_eq!(payload["return_failure_trace"], true);
+        assert_eq!(payload["retry_trx"], true);
+        assert_eq!(payload["retry_trx_num_blocks"], 0);
+        assert_eq!(payload["transaction"], transaction);
+    }
+
+    #[test]
+    fn retry_disabled_preserves_push_transaction_request() {
+        let transaction = serde_json::json!({
+            "signatures": ["SIG_K1_test"],
+            "compression": "none",
+            "packed_context_free_data": "",
+            "packed_trx": "00",
+        });
+        let (path, payload) = submission_request(&transaction, false);
+
+        assert_eq!(path, "/v1/chain/push_transaction");
+        assert_eq!(payload, transaction);
     }
 
     #[test]
