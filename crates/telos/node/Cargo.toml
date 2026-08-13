@@ -46,6 +46,7 @@ reth-rpc-server-types.workspace = true
 reth-rpc-builder.workspace = true
 reth-stages.workspace = true
 reth-stages-types.workspace = true
+reth-tasks.workspace = true
 
 # telos
 reth-telos-rpc.workspace = true

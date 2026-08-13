@@ -21,7 +21,7 @@ use reth_ethereum_cli::ExtendedCommand;
 use reth_node_telos::{
     rpc_policy::{
         enforce_exact_auth_rpc_surface, enforce_exact_public_rpc_surface, enforce_telos_rpc_policy,
-        validate_telos_transaction_count_block, REPLAY_UNSAFE_RPC_METHODS,
+        telos_pubsub_module, validate_telos_transaction_count_block, REPLAY_UNSAFE_RPC_METHODS,
         TELOS_FORWARDER_REQUIRED_RPC_METHODS, TELOS_UNSUPPORTED_AUTH_METHODS,
         TELOS_UNSUPPORTED_RPC_METHODS,
     },
@@ -303,6 +303,18 @@ fn main() {
                             methods = ?TELOS_FORWARDER_REQUIRED_RPC_METHODS,
                             "removed RPC methods that require a native Telos forwarder"
                         );
+                    }
+                    if ctx
+                        .modules
+                        .module_config()
+                        .contains_ws(&RethRpcModule::Eth)
+                    {
+                        let module = telos_pubsub_module(
+                            ctx.registry.eth_handlers().pubsub.clone(),
+                            ctx.registry.tasks().clone(),
+                        )?;
+                        ctx.modules.add_or_replace_ws(module)?;
+                        info!(target: "reth::cli", "installed restricted Telos WebSocket subscriptions");
                     }
                     enforce_exact_public_rpc_surface(ctx.modules, forwarder_enabled)?;
                     enforce_exact_auth_rpc_surface(ctx.auth_module.module_mut())?;

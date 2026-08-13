@@ -9641,6 +9641,7 @@ dependencies = [
  "reth-stages",
  "reth-stages-types",
  "reth-storage-errors",
+ "reth-tasks",
  "reth-telos-rpc",
  "reth-telos-rpc-engine-api",
  "revm",
