@@ -35,6 +35,10 @@ pub struct TelosArgs {
     /// Seconds to cache the on-chain gas price.
     #[arg(long = "telos.gas-cache-seconds", default_value_t = 8)]
     pub gas_cache_seconds: u32,
+
+    /// Ask the native Telos API to retry submitted transactions until they enter a block.
+    #[arg(long = "telos.transaction-retry", default_value_t = false)]
+    pub transaction_retry: bool,
 }
 
 impl Default for TelosArgs {
@@ -46,6 +50,7 @@ impl Default for TelosArgs {
             signer_permission: None,
             signer_key_file: None,
             gas_cache_seconds: 8,
+            transaction_retry: false,
         }
     }
 }
@@ -123,6 +128,7 @@ impl From<TelosArgs> for TelosClientArgs {
             signer_permission: args.signer_permission,
             signer_key_file: args.signer_key_file,
             gas_cache_seconds: Some(args.gas_cache_seconds),
+            transaction_retry: args.transaction_retry,
         }
     }
 }
@@ -146,6 +152,16 @@ mod tests {
         assert_eq!(args, TelosArgs::default());
         assert!(!args.forwarder_configured());
         assert!(args.validate().is_ok());
+    }
+
+    #[test]
+    fn transaction_retry_is_explicitly_enabled() {
+        let defaults = CommandParser::<TelosArgs>::parse_from(["reth"]).args;
+        assert!(!defaults.transaction_retry);
+
+        let enabled =
+            CommandParser::<TelosArgs>::parse_from(["reth", "--telos.transaction-retry"]).args;
+        assert!(enabled.transaction_retry);
     }
 
     #[test]

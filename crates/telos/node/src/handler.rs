@@ -386,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn chain_three_deposit_to_zero_burns_value() {
+    fn chain_three_withdrawal_to_zero_burns_value() {
         let caller = Address::repeat_byte(0x11);
         let mut evm = evm_with_caller(caller, 0);
         evm.components_mut().0.insert_account_info(
@@ -449,6 +449,26 @@ mod tests {
         let output = evm_with_caller(caller, 5).transact_raw(tx).unwrap();
 
         assert_eq!(output.state[&caller].info.nonce, 5);
+    }
+
+    #[test]
+    fn chain_three_stale_nonce_withdrawal_burns_and_preserves_state_nonce() {
+        let caller = Address::repeat_byte(0x11);
+        let mut evm = evm_with_caller(caller, 12);
+        evm.components_mut().0.insert_account_info(
+            Address::ZERO,
+            AccountInfo { balance: U256::from(7), ..Default::default() },
+        );
+        let mut tx = transaction(caller, 0, true);
+        tx.inner.kind = TxKind::Call(Address::ZERO);
+        tx.inner.value = U256::from(25);
+
+        let output = evm.transact_raw(tx).unwrap();
+        let gas_used = output.result.gas().tx_gas_used();
+
+        assert_eq!(output.state[&caller].info.balance, U256::from(10_000_000 - gas_used - 25));
+        assert_eq!(output.state[&caller].info.nonce, 12);
+        assert_eq!(output.state[&Address::ZERO].info.balance, U256::from(7));
     }
 
     #[test]

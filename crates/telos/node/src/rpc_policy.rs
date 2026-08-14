@@ -1,8 +1,13 @@
 //! Telos RPC surface policy.
 
 use alloy_eips::BlockId;
+use alloy_rpc_types_eth::pubsub::{Params, SubscriptionKind};
+use jsonrpsee::{types::ErrorObjectOwned, RpcModule};
 use reth_node_core::args::RpcServerArgs;
+use reth_rpc::EthPubSub;
 use reth_rpc_builder::{RethRpcModule, TransportRpcModules};
+use reth_rpc_eth_api::helpers::EthSubscriptions;
+use reth_tasks::Runtime;
 use std::collections::BTreeSet;
 
 /// Complete authenticated API exposed to the trusted companion.
@@ -61,6 +66,9 @@ pub const TELOS_PUBLIC_ETH_RPC_ALLOWLIST: &[&str] = &[
     "eth_uninstallFilter",
 ];
 
+/// WebSocket-only Ethereum methods qualified for Telos canonical-chain notifications.
+pub const TELOS_PUBLIC_ETH_WS_RPC_ALLOWLIST: &[&str] = &["eth_subscribe", "eth_unsubscribe"];
+
 /// Exact public network methods qualified for the follower's no-peer network implementation.
 pub const TELOS_PUBLIC_NET_RPC_ALLOWLIST: &[&str] = &["net_peerCount", "net_version"];
 
@@ -116,6 +124,60 @@ pub fn validate_telos_transaction_count_block(block: Option<BlockId>) -> Result<
         )
     }
     Ok(())
+}
+
+/// Builds the restricted Telos subscription surface.
+///
+/// Canonical heads, logs, and receipts are sourced from the follower's canonical-state stream.
+/// Pending transactions and syncing are intentionally rejected because Reth's local pool and
+/// peer-network status do not represent nodeos transaction propagation or companion catch-up.
+pub fn telos_pubsub_module<Eth>(
+    pubsub: EthPubSub<Eth>,
+    tasks: Runtime,
+) -> eyre::Result<RpcModule<()>>
+where
+    Eth: EthSubscriptions + 'static,
+{
+    let mut module = RpcModule::new(());
+    module.register_subscription(
+        "eth_subscribe",
+        "eth_subscription",
+        "eth_unsubscribe",
+        move |params, pending, _ctx, _ext| {
+            let pubsub = pubsub.clone();
+            let tasks = tasks.clone();
+            async move {
+                let mut params = params.sequence();
+                let kind: SubscriptionKind = params.next()?;
+                let subscription_params: Option<Params> = params.optional_next()?;
+
+                if !is_telos_subscription_kind_supported(&kind) {
+                    pending
+                        .reject(ErrorObjectOwned::owned(
+                            -32602,
+                            "unsupported Telos subscription: use newHeads, logs, or transactionReceipts",
+                            None::<()>,
+                        ))
+                        .await;
+                    return Ok(())
+                }
+
+                let sink = pending.accept().await?;
+                tasks.spawn_task(async move {
+                    let _ = pubsub.handle_accepted(sink, kind, subscription_params).await;
+                });
+                Ok(())
+            }
+        },
+    )?;
+    Ok(module)
+}
+
+const fn is_telos_subscription_kind_supported(kind: &SubscriptionKind) -> bool {
+    matches!(
+        kind,
+        SubscriptionKind::NewHeads | SubscriptionKind::Logs | SubscriptionKind::TransactionReceipts
+    )
 }
 
 /// Authenticated methods outside the minimal Telos companion protocol.
@@ -238,6 +300,9 @@ pub fn enforce_exact_public_rpc_surface(
             expected.extend(TELOS_PUBLIC_ETH_RPC_ALLOWLIST.iter().copied().filter(|method| {
                 forwarder_enabled || !TELOS_FORWARDER_REQUIRED_RPC_METHODS.contains(method)
             }));
+            if transport == "WebSocket" {
+                expected.extend(TELOS_PUBLIC_ETH_WS_RPC_ALLOWLIST.iter().copied());
+            }
         }
         if net {
             expected.extend(TELOS_PUBLIC_NET_RPC_ALLOWLIST.iter().copied());
@@ -308,6 +373,15 @@ mod tests {
         assert!(validate_telos_transaction_count_block(Some(BlockId::latest())).is_ok());
         assert!(validate_telos_transaction_count_block(Some(42u64.into())).is_ok());
         assert!(validate_telos_transaction_count_block(Some(BlockId::pending())).is_err());
+    }
+
+    #[test]
+    fn subscriptions_expose_only_canonical_chain_events() {
+        assert!(is_telos_subscription_kind_supported(&SubscriptionKind::NewHeads));
+        assert!(is_telos_subscription_kind_supported(&SubscriptionKind::Logs));
+        assert!(is_telos_subscription_kind_supported(&SubscriptionKind::TransactionReceipts));
+        assert!(!is_telos_subscription_kind_supported(&SubscriptionKind::NewPendingTransactions));
+        assert!(!is_telos_subscription_kind_supported(&SubscriptionKind::Syncing));
     }
 
     #[test]
@@ -424,7 +498,7 @@ mod tests {
     fn public_surface_is_exact_and_namespace_aware() {
         let config = TransportRpcModuleConfig::default()
             .with_http([RethRpcModule::Eth, RethRpcModule::Net])
-            .with_ws([RethRpcModule::Web3]);
+            .with_ws([RethRpcModule::Eth, RethRpcModule::Web3]);
         let mut http = RpcModule::new(());
         for method in TELOS_PUBLIC_ETH_RPC_ALLOWLIST
             .iter()
@@ -434,7 +508,12 @@ mod tests {
             http.register_method(method, |_, _, _| "ok").unwrap();
         }
         let mut ws = RpcModule::new(());
-        for method in TELOS_PUBLIC_WEB3_RPC_ALLOWLIST.iter().copied() {
+        for method in TELOS_PUBLIC_ETH_RPC_ALLOWLIST
+            .iter()
+            .copied()
+            .chain(TELOS_PUBLIC_ETH_WS_RPC_ALLOWLIST.iter().copied())
+            .chain(TELOS_PUBLIC_WEB3_RPC_ALLOWLIST.iter().copied())
+        {
             ws.register_method(method, |_, _, _| "ok").unwrap();
         }
         let modules =

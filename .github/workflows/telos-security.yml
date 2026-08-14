@@ -74,7 +74,13 @@ jobs:
           # GHSA-frvp-7c67-39w9 is a Windows-only serve-static traversal in the nested
           # @modelcontextprotocol/sdk Hono adapter. Vocs does not import or bundle that adapter,
           # and this Linux static build serves no files through it. No patched 1.x release exists.
-          bun audit --ignore GHSA-frvp-7c67-39w9
+          # GHSA-w3rx-r6r6-pgpr and GHSA-5p2g-fcmc-qvqq affect optional image-size decoders.
+          # Vocs 2.6.1 pins the latest release, which has no patched successor; the controlled
+          # documentation build does not process ICNS, JXL, or HEIF input.
+          bun audit \
+            --ignore GHSA-frvp-7c67-39w9 \
+            --ignore GHSA-w3rx-r6r6-pgpr \
+            --ignore GHSA-5p2g-fcmc-qvqq
 
   security-success:
     name: telos / security success
