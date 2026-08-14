@@ -128,7 +128,7 @@ impl TelosFrame {
             return return_result(result)
         }
 
-        // Native chain-ID-3 transactions from the zero address represent withdrawals. The value
+        // Native chain-ID-3 transactions from the zero address represent deposits. The value
         // transfer above is authoritative, but executing target bytecode would fabricate a second
         // state transition that does not exist in the native runtime.
         if stops_after_native_zero_caller_transfer(context) {
@@ -301,11 +301,42 @@ fn apply_call_value<DB: Database>(
             if authenticated_context &&
                 chain_id == Some(3) &&
                 inputs.target_address.is_zero() &&
+                !inputs.caller.is_zero() =>
+        {
+            // A native withdrawal to address zero is a burn. Debit and journal the source while
+            // only touching the destination; crediting the zero account would create an EVM-only
+            // balance. Preserve the legacy temporary-credit overflow check and its error order.
+            let source_balance = {
+                let source = journal.load_account_mut(inputs.caller)?.data;
+                *source.balance()
+            };
+            if value > source_balance {
+                return Ok(Some(InstructionResult::OutOfFunds))
+            }
+            let destination_balance = {
+                let destination = journal.load_account_mut(Address::ZERO)?.data;
+                *destination.balance()
+            };
+            if destination_balance.checked_add(value).is_none() {
+                return Ok(Some(InstructionResult::OverflowPayment))
+            }
+            {
+                let mut source = journal.load_account_mut(inputs.caller)?.data;
+                let debited = source.decr_balance(value);
+                debug_assert!(debited);
+            }
+            journal.load_account_mut(Address::ZERO)?.data.touch();
+            Ok(None)
+        }
+        CallValue::Transfer(value)
+            if authenticated_context &&
+                chain_id == Some(3) &&
+                inputs.target_address.is_zero() &&
                 inputs.caller.is_zero() =>
         {
-            // The legacy burn guard explicitly excludes the zero sender. A zero-to-zero transfer
-            // therefore behaves as a checked self-transfer: it touches the account but leaves the
-            // balance unchanged before the native zero-caller early stop.
+            // The withdrawal burn guard explicitly excludes the zero sender. A zero-to-zero
+            // transfer therefore behaves as a checked self-transfer: it touches the account but
+            // leaves the balance unchanged before the native zero-caller early stop.
             let mut account = journal.load_account_mut(Address::ZERO)?.data;
             if value > *account.balance() {
                 return Ok(Some(InstructionResult::OutOfFunds))
@@ -545,7 +576,7 @@ mod tests {
     }
 
     #[test]
-    fn chain_three_transfer_to_zero_credits_authoritative_zero_account() {
+    fn chain_three_withdrawal_to_zero_burns_without_crediting_zero() {
         let caller = Address::repeat_byte(0x11);
         let mut context = context_with_accounts(
             native_tx(caller, 3, 1),
@@ -564,7 +595,7 @@ mod tests {
 
         let state = context.journaled_state.finalize();
         assert_eq!(state[&caller].info.balance, U256::from(75));
-        assert_eq!(state[&Address::ZERO].info.balance, U256::from(32));
+        assert_eq!(state[&Address::ZERO].info.balance, U256::from(7));
     }
 
     #[test]
@@ -611,7 +642,7 @@ mod tests {
     }
 
     #[test]
-    fn chain_three_transfer_to_zero_preserves_destination_overflow_error() {
+    fn chain_three_withdrawal_preserves_destination_overflow_error() {
         let caller = Address::repeat_byte(0x11);
         let mut context = context_with_accounts(
             native_tx(caller, 3, 1),

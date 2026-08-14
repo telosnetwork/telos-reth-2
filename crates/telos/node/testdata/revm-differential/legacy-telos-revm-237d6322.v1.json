@@ -164,12 +164,13 @@
         "crates/revm/src/journaled_state.rs"
       ],
       "legacy_semantics": "A nonzero chain-3 caller transferring to address zero is debited without crediting zero, while zero-to-zero remains neutral and the destination overflow check still occurs.",
-      "port": "Canonical Telos block input carries the authoritative zero-address credit, so the Telos frame applies the normal checked transfer while preserving self-transfer and overflow ordering. This intentionally overrides the inferred legacy burn behavior to match chain history.",
+      "port": "Telos frame value application preserves the legacy withdrawal burn, touch, self-transfer, and overflow ordering.",
       "tests": [
-        { "path": "src/frame.rs", "function": "chain_three_transfer_to_zero_credits_authoritative_zero_account" },
+        { "path": "src/frame.rs", "function": "chain_three_withdrawal_to_zero_burns_without_crediting_zero" },
         { "path": "src/frame.rs", "function": "chain_three_zero_caller_to_zero_self_transfer_is_balance_neutral" },
-        { "path": "src/frame.rs", "function": "chain_three_transfer_to_zero_preserves_destination_overflow_error" },
-        { "path": "src/frame.rs", "function": "unauthenticated_transfer_to_zero_uses_ethereum_credit" }
+        { "path": "src/frame.rs", "function": "chain_three_withdrawal_preserves_destination_overflow_error" },
+        { "path": "src/frame.rs", "function": "unauthenticated_transfer_to_zero_uses_ethereum_credit" },
+        { "path": "src/handler.rs", "function": "chain_three_stale_nonce_withdrawal_burns_and_preserves_state_nonce" }
       ]
     },
     {
